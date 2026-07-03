@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: osaitrader-db
+    environment:
+      POSTGRES_USER: osaitrader
+      POSTGRES_PASSWORD: osaitrader_dev
+      POSTGRES_DB: osaitrader
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
