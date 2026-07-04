@@ -1,36 +1,46 @@
 {
-  "name": "tastytrade-service",
-  "version": "0.0.1",
-  "description": "Automated options strategy trader on tastytrade (REST, no gateway)",
-  "private": true,
-  "license": "UNLICENSED",
-  "scripts": {
-    "build": "nest build",
-    "format": "prettier --write \"src/**/*.ts\"",
-    "start": "nest start",
-    "start:dev": "nest start --watch",
-    "start:prod": "node dist/main",
-    "lint": "eslint \"{src,test}/**/*.ts\" --fix"
-  },
-  "dependencies": {
-    "@nestjs/common": "^11.0.1",
-    "@nestjs/config": "^4.0.3",
-    "@nestjs/core": "^11.0.1",
-    "@nestjs/platform-express": "^11.0.1",
-    "@nestjs/swagger": "^11.2.6",
-    "@tastytrade/api": "^2.0.0",
-    "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
-  },
-  "devDependencies": {
-    "@nestjs/cli": "^11.0.0",
-    "@nestjs/schematics": "^11.0.0",
-    "@types/node": "^22.10.7",
-    "prettier": "^3.4.2",
-    "source-map-support": "^0.5.21",
-    "ts-loader": "^9.5.2",
-    "ts-node": "^10.9.2",
-    "tsconfig-paths": "^4.2.0",
-    "typescript": "^5.7.3"
-  }
+	"name": "tastytrade-service",
+	"version": "0.0.1",
+	"description": "Automated options strategy trader on tastytrade (REST, no gateway)",
+	"private": true,
+	"license": "UNLICENSED",
+	"scripts": {
+		"build": "nest build",
+		"format": "prettier --write \"src/**/*.ts\"",
+		"start": "nest start",
+		"start:dev": "nest start --watch",
+		"start:prod": "node dist/main",
+		"lint": "eslint \"{src,test}/**/*.ts\" --fix",
+		"typeorm": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js -d src/data-source.ts",
+		"migration:generate": "npm run typeorm -- migration:generate src/migrations/$npm_config_name",
+		"migration:create": "npm run typeorm -- migration:create src/migrations/$npm_config_name",
+		"migration:run": "npm run typeorm -- migration:run",
+		"migration:revert": "npm run typeorm -- migration:revert"
+	},
+	"dependencies": {
+		"@anthropic-ai/sdk": "^0.110.0",
+		"@nestjs/common": "^11.0.1",
+		"@nestjs/config": "^4.0.3",
+		"@nestjs/core": "^11.0.1",
+		"@nestjs/platform-express": "^11.0.1",
+		"@nestjs/swagger": "^11.2.6",
+		"@nestjs/typeorm": "^11.0.0",
+		"@tastytrade/api": "^2.0.0",
+		"pg": "^8.13.1",
+		"reflect-metadata": "^0.2.2",
+		"rxjs": "^7.8.1",
+		"typeorm": "^0.3.20"
+	},
+	"devDependencies": {
+		"@nestjs/cli": "^11.0.0",
+		"@nestjs/schematics": "^11.0.0",
+		"@types/node": "^22.10.7",
+		"dotenv": "^17.0.0",
+		"prettier": "^3.4.2",
+		"source-map-support": "^0.5.21",
+		"ts-loader": "^9.5.2",
+		"ts-node": "^10.9.2",
+		"tsconfig-paths": "^4.2.0",
+		"typescript": "^5.7.3"
+	}
 }

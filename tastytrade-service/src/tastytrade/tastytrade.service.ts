@@ -203,4 +203,109 @@ export class TastytradeService implements OnModuleInit {
       }, seconds * 1000);
     });
   }
+
+  /**
+   * Build a compact market snapshot for one expiration: underlying price plus a
+   * window of strikes around ATM, each with call/put delta, IV, and bid/ask.
+   * This is the input the strategy AI reasons over.
+   */
+  async getGreeksSnapshot(
+    symbol: string,
+    dte = 35,
+    strikesPerSide = 8,
+    seconds = 7,
+  ): Promise<Record<string, unknown>> {
+    await this.ensureLogin();
+    const sym = symbol.toUpperCase();
+    const chain = await this.getNestedChain(sym);
+    const root = Array.isArray(chain)
+      ? chain[0]
+      : (chain?.items?.[0] ?? chain?.data?.items?.[0]);
+    const expirations = root?.expirations ?? [];
+    const exp = expirations.reduce(
+      (best: any, e: any) =>
+        !best ||
+        Math.abs(e['days-to-expiration'] - dte) <
+          Math.abs(best['days-to-expiration'] - dte)
+          ? e
+          : best,
+      null,
+    );
+    if (!exp) throw new Error(`No expirations available for ${sym}`);
+
+    const strikes = [...(exp.strikes ?? [])].sort(
+      (a: any, b: any) =>
+        parseFloat(a['strike-price']) - parseFloat(b['strike-price']),
+    );
+    const mid = Math.floor(strikes.length / 2);
+    const start = Math.max(0, mid - strikesPerSide);
+    const window = strikes.slice(start, start + strikesPerSide * 2 + 1);
+
+    // Stream the underlying equity quote + each strike's call & put.
+    const streamerSymbols = [sym];
+    for (const s of window) {
+      if (s['put-streamer-symbol']) streamerSymbols.push(s['put-streamer-symbol']);
+      if (s['call-streamer-symbol'])
+        streamerSymbols.push(s['call-streamer-symbol']);
+    }
+
+    const snap = await this.streamSnapshot(streamerSymbols, seconds);
+    const bySymbol: Record<string, any> = {};
+    for (const evt of (snap.events as any[]) ?? []) {
+      for (const e of Array.isArray(evt?.data) ? evt.data : []) {
+        const s = e?.eventSymbol;
+        if (!s) continue;
+        bySymbol[s] = bySymbol[s] ?? {};
+        if (e.eventType === 'Greeks') {
+          Object.assign(bySymbol[s], {
+            iv: e.volatility,
+            delta: e.delta,
+            theta: e.theta,
+            vega: e.vega,
+            price: e.price,
+          });
+        } else if (e.eventType === 'Quote') {
+          Object.assign(bySymbol[s], { bid: e.bidPrice, ask: e.askPrice });
+        }
+      }
+    }
+
+    const u = bySymbol[sym];
+    const underlyingPrice =
+      u && u.bid != null && u.ask != null
+        ? (u.bid + u.ask) / 2
+        : (u?.price ?? null);
+
+    const round = (n: any) =>
+      typeof n === 'number' ? Math.round(n * 10000) / 10000 : n;
+    const contracts = window.map((s: any) => {
+      const p = bySymbol[s['put-streamer-symbol']] ?? {};
+      const c = bySymbol[s['call-streamer-symbol']] ?? {};
+      return {
+        strike: parseFloat(s['strike-price']),
+        put: {
+          symbol: s.put,
+          delta: round(p.delta),
+          iv: round(p.iv),
+          bid: p.bid,
+          ask: p.ask,
+        },
+        call: {
+          symbol: s.call,
+          delta: round(c.delta),
+          iv: round(c.iv),
+          bid: c.bid,
+          ask: c.ask,
+        },
+      };
+    });
+
+    return {
+      symbol: root?.['underlying-symbol'] ?? sym,
+      underlyingPrice: round(underlyingPrice),
+      expiration: exp['expiration-date'],
+      dte: exp['days-to-expiration'],
+      contracts,
+    };
+  }
 }
