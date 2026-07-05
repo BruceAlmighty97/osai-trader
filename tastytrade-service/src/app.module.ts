@@ -3,6 +3,8 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { TastytradeModule } from './tastytrade/tastytrade.module';
 import { StrategyModule } from './strategy/strategy.module';
+import { PersistenceModule } from './persistence/persistence.module';
+import { SocialModule } from './social/social.module';
 
 @Module({
   imports: [
@@ -25,6 +27,8 @@ import { StrategyModule } from './strategy/strategy.module';
     }),
     TastytradeModule,
     StrategyModule,
+    PersistenceModule,
+    SocialModule,
   ],
 })
 export class AppModule {}
