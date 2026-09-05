@@ -239,6 +239,43 @@ export class OsaiTraderStack extends cdk.Stack {
       }),
     );
 
+    // Optional SSM bastion (`-c bastion=true`): a jump host for tunnelling from
+    // your laptop to the private DB (5432) and the service's API port (3100).
+    // No SSH key, no inbound ports — reachable only via `aws ssm start-session`.
+    if (this.node.tryGetContext('bastion') === 'true') {
+      const bastionSg = new ec2.SecurityGroup(this, 'BastionSg', {
+        vpc,
+        description: 'osai-trader SSM bastion',
+        allowAllOutbound: true,
+      });
+      dbSg.addIngressRule(bastionSg, ec2.Port.tcp(5432), 'bastion to Postgres');
+      serviceSg.addIngressRule(
+        bastionSg,
+        ec2.Port.tcp(CONTAINER_PORT),
+        'bastion to API',
+      );
+
+      const bastion = new ec2.Instance(this, 'Bastion', {
+        vpc,
+        // Public subnet + public IP so the SSM agent reaches SSM without a NAT.
+        vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+        instanceType: ec2.InstanceType.of(
+          ec2.InstanceClass.T4G,
+          ec2.InstanceSize.NANO,
+        ),
+        machineImage: ec2.MachineImage.latestAmazonLinux2023({
+          cpuType: ec2.AmazonLinuxCpuType.ARM_64, // SSM agent preinstalled
+        }),
+        securityGroup: bastionSg,
+      });
+      bastion.role.addManagedPolicy(
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          'AmazonSSMManagedInstanceCore',
+        ),
+      );
+      new cdk.CfnOutput(this, 'BastionId', { value: bastion.instanceId });
+    }
+
     new cdk.CfnOutput(this, 'EcrRepoUri', { value: repo.repositoryUri });
     new cdk.CfnOutput(this, 'ClusterName', { value: cluster.clusterName });
     new cdk.CfnOutput(this, 'ServiceName', { value: service.serviceName });
