@@ -1,3 +1,18 @@
+# Dependencies & build output
 node_modules/
 dist/
+
+# Secrets & local config
 .env
+
+# OS cruft
+.DS_Store
+
+# Local working output (unrelated generated files, PDFs, etc.)
+output/
+tmp/
+
+# AWS CDK
+cdk.out/
+.cdk.staging/
+# NOTE: infra/cdk.context.json is intentionally committed (deterministic lookups)
