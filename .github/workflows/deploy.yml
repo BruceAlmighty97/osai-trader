@@ -20,7 +20,9 @@ env:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    # Native ARM64 runner (free for public repos) so the ARM image builds without
+    # QEMU emulation — QEMU core-dumps on `npm ci` (illegal instruction).
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
 
@@ -35,9 +37,7 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Task definition is ARM64 (cheaper Fargate); GitHub runners are x86,
-      # so cross-build via QEMU.
-      - uses: docker/setup-qemu-action@v3
+      # Runner is ARM64, task is ARM64 — a native build, no QEMU needed.
       - uses: docker/setup-buildx-action@v3
 
       - name: Build and push image
