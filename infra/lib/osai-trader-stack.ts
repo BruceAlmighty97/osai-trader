@@ -200,6 +200,29 @@ export class OsaiTraderStack extends cdk.Stack {
         resources: [service.serviceArn],
       }),
     );
+    // CI deploys by registering a new task-def revision (render + deploy actions)
+    // rather than force-rolling :latest. These two don't support resource-level
+    // scoping, so they must be '*'.
+    deployRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['ecs:DescribeTaskDefinition', 'ecs:RegisterTaskDefinition'],
+        resources: ['*'],
+      }),
+    );
+    // RegisterTaskDefinition/UpdateService with the task's roles requires passing
+    // them — scoped to just those two roles, and only to ECS tasks.
+    deployRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['iam:PassRole'],
+        resources: [
+          taskDef.taskRole.roleArn,
+          taskDef.executionRole!.roleArn,
+        ],
+        conditions: {
+          StringEquals: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' },
+        },
+      }),
+    );
 
     new cdk.CfnOutput(this, 'EcrRepoUri', { value: repo.repositoryUri });
     new cdk.CfnOutput(this, 'ClusterName', { value: cluster.clusterName });

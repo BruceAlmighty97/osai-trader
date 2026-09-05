@@ -56,9 +56,30 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Fire-and-forget: kick a new deployment but don't block the workflow on
-      # the service reaching steady state.
-      - name: Roll ECS service
-        run: >
-          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE"
-          --force-new-deployment
+      # Pull the task definition currently on the service (derive its ARN so we
+      # don't hardcode the CDK-generated family name).
+      - name: Download current task definition
+        run: |
+          TASK_DEF_ARN=$(aws ecs describe-services --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" --query 'services[0].taskDefinition' --output text)
+          aws ecs describe-task-definition --task-definition "$TASK_DEF_ARN" \
+            --query taskDefinition > task-definition.json
+
+      # Swap in the image we just pushed (immutable short-SHA tag).
+      - name: Render new image into the task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: service
+          image: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.vars.outputs.sha_short }}
+
+      # Register the new revision and point the service at it (fire-and-forget —
+      # don't block on stability; the service's circuit breaker guards rollout).
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: false
