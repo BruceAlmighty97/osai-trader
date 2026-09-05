@@ -5,6 +5,8 @@ import { TastytradeModule } from './tastytrade/tastytrade.module';
 import { StrategyModule } from './strategy/strategy.module';
 import { PersistenceModule } from './persistence/persistence.module';
 import { SocialModule } from './social/social.module';
+import { AuthModule } from './auth/auth.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -31,6 +33,8 @@ import { SocialModule } from './social/social.module';
         migrations: ['dist/migrations/*.js'],
       }),
     }),
+    AuthModule,
+    HealthModule,
     TastytradeModule,
     StrategyModule,
     PersistenceModule,

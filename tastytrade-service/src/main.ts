@@ -9,6 +9,9 @@ async function bootstrap() {
     .setTitle('tastytrade-service')
     .setDescription('Automated options strategy trader on tastytrade')
     .setVersion('0.1.0')
+    // Enables the "Authorize" button; sends the key as the X-API-Key header.
+    .addApiKey({ type: 'apiKey', name: 'X-API-Key', in: 'header' }, 'X-API-Key')
+    .addSecurityRequirements('X-API-Key')
     .build();
   SwaggerModule.setup('swagger', app, SwaggerModule.createDocument(app, config));
 
