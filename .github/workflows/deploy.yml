@@ -1,0 +1,61 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tastytrade-service/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write # OIDC token for assuming the AWS deploy role
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: osai-trader
+  ECS_CLUSTER: osai-trader
+  ECS_SERVICE: osai-trader
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # DeployRoleArn output of the CDK stack — set as a repo variable
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Task definition is ARM64 (cheaper Fargate); GitHub runners are x86,
+      # so cross-build via QEMU.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: tastytrade-service
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:latest
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Roll ECS service
+        run: >
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE"
+          --force-new-deployment
+
+      - name: Wait for service to stabilize
+        run: aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"

@@ -19,6 +19,12 @@ import { SocialModule } from './social/social.module';
         password: config.get<string>('DB_PASSWORD', 'osaitrader_dev'),
         database: config.get<string>('DB_NAME', 'osaitrader'),
         autoLoadEntities: true,
+        // RDS enforces TLS (rds.force_ssl) but we don't ship the RDS CA bundle,
+        // so encrypt without verifying the server cert.
+        ssl:
+          config.get<string>('DB_SSL') === 'true'
+            ? { rejectUnauthorized: false }
+            : undefined,
         // Migrations-only: never auto-sync schema (avoids silent data loss).
         synchronize: false,
         migrationsRun: config.get<string>('NODE_ENV') === 'production',

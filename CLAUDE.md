@@ -109,3 +109,13 @@ http://localhost:3000/swagger
 - `IBKR_HOST`, `IBKR_PORT` (4002), `IBKR_CLIENT_ID` (0)
 - `IBKR_MARKET_DATA_TYPE` (3 = delayed, 1 = live)
 - `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_NAME`
+
+## Phase 6: AWS Infrastructure ✅ (code complete — first deploy pending)
+
+> NOTE: sections above predate the 2026-07-03 tastytrade pivot — the app now lives in
+> `tastytrade-service/` (port 3100, no TWS/IB Gateway needed).
+
+- `infra/` — CDK (TypeScript) stack `OsaiTraderStack` in us-east-1: VPC (public subnets, no NAT), ECR, RDS Postgres 16 `db.t4g.micro`, Secrets Manager (`osai-trader/db`, `osai-trader/app`), ECS Fargate service (0.25 vCPU / 512 MB, ARM64), GitHub OIDC deploy role
+- `tastytrade-service/Dockerfile` — multi-stage build, verified end-to-end locally (boots, runs migrations, sandbox login OK)
+- `.github/workflows/deploy.yml` — build → push ECR → roll ECS; needs repo variable `AWS_DEPLOY_ROLE_ARN` after first `cdk deploy`
+- Full runbook + gotchas: `docs/aws-infrastructure.md`

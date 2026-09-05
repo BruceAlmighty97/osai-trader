@@ -13,6 +13,8 @@ export default new DataSource({
   username: process.env.DB_USERNAME ?? 'osaitrader',
   password: process.env.DB_PASSWORD ?? 'osaitrader_dev',
   database: process.env.DB_NAME ?? 'osaitrader',
+  ssl:
+    process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
   entities: ['src/**/*.entity.ts'],
   migrations: ['src/migrations/*.ts'],
   synchronize: false,
