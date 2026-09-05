@@ -96,6 +96,19 @@ export class OsaiTraderStack extends cdk.Stack {
       },
     });
 
+    // Random API key protecting the REST API. Kept in its OWN secret (not the
+    // app secret above) so regenerating/updating it can never clobber the
+    // hand-entered tastytrade/Anthropic values. CDK generates the value at
+    // create time; it lives only in Secrets Manager (never in the CFN template).
+    const apiKeySecret = new secretsmanager.Secret(this, 'ApiKeySecret', {
+      secretName: 'osai-trader/api-key',
+      description: 'API key required by the REST API (X-API-Key header)',
+      generateSecretString: {
+        passwordLength: 48,
+        excludePunctuation: true, // keep it header/curl-safe
+      },
+    });
+
     const cluster = new ecs.Cluster(this, 'Cluster', {
       vpc,
       clusterName: 'osai-trader',
@@ -142,6 +155,8 @@ export class OsaiTraderStack extends cdk.Stack {
           appSecrets,
           'ANTHROPIC_API_KEY',
         ),
+        // Whole-secret value (no JSON field) = the generated key.
+        API_KEY: ecs.Secret.fromSecretsManager(apiKeySecret),
       },
     });
 
@@ -232,5 +247,8 @@ export class OsaiTraderStack extends cdk.Stack {
       value: db.instanceEndpoint.socketAddress,
     });
     new cdk.CfnOutput(this, 'AppSecretName', { value: appSecrets.secretName });
+    new cdk.CfnOutput(this, 'ApiKeySecretName', {
+      value: apiKeySecret.secretName,
+    });
   }
 }
