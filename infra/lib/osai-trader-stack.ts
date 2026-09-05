@@ -149,7 +149,9 @@ export class OsaiTraderStack extends cdk.Stack {
       cluster,
       serviceName: 'osai-trader',
       taskDefinition: taskDef,
-      desiredCount: 1,
+      // 0 for the first deploy (no image in ECR yet) and for the fully-scheduled
+      // model; scale up with -c desiredCount=1 or `aws ecs update-service`.
+      desiredCount: Number(this.node.tryGetContext('desiredCount') ?? 1),
       assignPublicIp: true,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       securityGroups: [serviceSg],
