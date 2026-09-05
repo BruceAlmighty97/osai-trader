@@ -20,9 +20,93 @@ Design notes:
 - **TLS to RDS:** the app connects with `DB_SSL=true` (encrypts, skips CA verification since we don't bundle the RDS cert).
 - **Deploys are `:latest`-based:** CI pushes `:latest` + `:<sha>` and forces a new deployment; no task-definition re-registration.
 
+## Planned: scheduling & access model (EventBridge Scheduler + RunTask)
+
+> Status: **target design, not yet built.** The current stack runs an always-on
+> service (`desiredCount: 1`) with no scheduler. This section is the direction we
+> chose after weighing App Runner / Render / ALB (see `docs/design-decisions.md`):
+> **stay in AWS, drop the ALB, drive the bot with EventBridge Scheduler.**
+
+### Why this shape
+
+A trading bot is a **scheduled background worker**, not a web app. It doesn't need
+a server sitting up 24/7 or a public endpoint — it needs work to happen at the
+right times. So instead of an always-on service you have to reach, EventBridge
+Scheduler launches a **short-lived Fargate task** that runs one cycle and exits.
+
+```
+EventBridge Scheduler                          ┌─ you (occasional) ─┐
+(market-hours cron, ET/DST, NYSE-gated)        │                    │
+   ├── 10:00,12:00,14:00 ET → RunTask "scan"    SSM tunnel      CloudWatch
+   └── every ~10 min        → RunTask "manage"  (via bastion)      Logs
+              │                                     │                │
+              ▼                                     ▼                ▼
+   short-lived Fargate task ──────────────►   RDS Postgres     audit trail
+   (same image, CMD override:                 (private, SG-only)  + reasoning
+    scan / manage → run once → exit)
+              │
+              └──► tastytrade + Anthropic (outbound via public IP, no NAT)
+```
+
+Benefits vs. the always-on service + ALB:
+
+- **Minimal compute** — billed per task-second, not 24/7. ~40 short runs/day × ~30s
+  ≈ pennies/mo, vs ~$7/mo for the always-on task.
+- **Nothing to expose** — no ALB, no inbound rule, no public API. The "how do I
+  reach the API" problem disappears; the bot is trigger-driven, not request-driven.
+- **AWS-native scheduling** — EventBridge Scheduler handles the ET/DST /
+  market-hours / NYSE-calendar logic (see `docs/market-hours-scheduling.md`).
+- **No scaling machinery** — just scheduled one-shot tasks.
+
+### Two cadences, two schedules
+
+| Schedule | Cadence (ET) | Task command | Does |
+|---|---|---|---|
+| Entry scan | a few times/day, e.g. 10:00 / 12:00 / 14:00 | `scan` | watchlist → rank → propose/enter |
+| Position management | every ~10 min during the window | `manage` | read holdings, apply exit rules (50% / 21 DTE / 2× loss), close |
+
+Both target the **same container image** with a different command override, so
+there's one thing to build and deploy.
+
+### Prerequisites (not yet built)
+
+1. **One-shot mode in the app.** Today the image only boots the NestJS web server
+   (`CMD ["node","dist/main"]`). RunTask needs `node dist/main scan` / `manage` to
+   run a single cycle and exit non-zero on failure. Ties to roadmap #1
+   (`/strategy/scan`) and #5 (position management).
+2. **Scheduler IAM.** EventBridge Scheduler needs a role allowed to `ecs:RunTask`
+   on the task definition and to `iam:PassRole` the task's execution + task roles.
+3. **Whether to keep the always-on service.** Two viable end states:
+   - **Fully scheduled (leanest):** drop the long-running service (`desiredCount: 0`
+     or remove it); everything is RunTask. Cheapest, but no live API to poke.
+   - **Hybrid:** keep `desiredCount: 1` for the REST API + an always-warm intraday
+     loop, add EventBridge only for the entry scan. Simpler code, ~$7/mo floor.
+
+   Recommendation: start **fully scheduled** — it matches "minimal compute, no
+   24/7" — and only add a warm service if the intraday loop needs sub-minute latency.
+
+### Human access (when you actually need it)
+
+With no always-on server, you reach things on demand:
+
+| Want | How |
+|---|---|
+| See what it did | **CloudWatch Logs** `/osai-trader/service` + the `decisions` table |
+| Query the DB (GUI) | tiny **SSM bastion** (t4g.nano ~$3/mo) + `aws ssm start-session … AWS-StartPortForwardingSessionToRemoteHost` → point DBeaver at `localhost:5432` |
+| Trigger a run manually | `aws ecs run-task … --overrides '{"containerOverrides":[{"name":"service","command":["node","dist/main","scan"]}]}'` |
+| Poke the REST API | run an ad-hoc task with the default (web) command, then SSM port-forward 3100 — or just run the service locally against the prod DB over the SSM tunnel |
+
+The SSM bastion is optional — only add it when you want a SQL GUI. Log +
+`run-task` inspection needs nothing extra.
+
 ## Estimated monthly cost
 
-Fargate ~$7 + RDS ~$12 + storage ~$2.50 + public IPv4 ~$4 + secrets ~$1 ≈ **$26–28/mo**.
+**Current (always-on service):** Fargate ~$7 + RDS ~$12 + storage ~$2.50 +
+public IPv4 ~$4 + secrets ~$1 ≈ **$26–28/mo**.
+
+**Planned (fully scheduled):** RDS ~$12 + storage ~$2.50 + secrets ~$1 +
+task-seconds ~$1 + (optional SSM bastion ~$3) ≈ **$16–20/mo** — the Fargate
+always-on line collapses to near-zero.
 
 ## First deploy (one-time, from your machine)
 

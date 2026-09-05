@@ -15,11 +15,34 @@
 - **Two-agent pattern** preferred: analysis agent + execution review agent
 
 ### AWS Infrastructure
-- **ECS Fargate** with two containers per task (NestJS + IB Gateway)
-- **Secrets Manager** for IBKR credentials and Anthropic API keys
-- **RDS Postgres** for trade history, position snapshots, audit logging
-- **CloudWatch** for monitoring and alerting (connectivity loss, risk breaches)
-- **SQS or EventBridge** to decouple market data ingestion from decision engine (evaluate later)
+- **ECS Fargate**, single container (NestJS only — the tastytrade pivot removed the
+  IB Gateway sidecar; the app talks to tastytrade over plain REST).
+- **Secrets Manager** for tastytrade credentials and the Anthropic API key.
+- **RDS Postgres** for decisions, orders, position snapshots, audit logging.
+- **CloudWatch** for logs/monitoring (risk breaches, run failures).
+- **EventBridge Scheduler** for the market-hours run cadence (see below).
+
+### Hosting platform: stay on AWS, Fargate over App Runner / PaaS / ALB
+Decided 2026-09 after revisiting it (the service had no reachable API or DB path yet).
+
+- **Stay in AWS**, not Render/Railway — chosen for single-vendor breadth a trading
+  system will grow into (EventBridge, Timestream/S3 for tick history, Bedrock, SNS
+  alerts) and one IAM/network/IaC model. A PaaS is simpler but makes private access
+  to AWS data services awkward and splits the stack across two vendors.
+- **App Runner rejected** for this workload: its instances only get CPU while
+  handling a request, so an in-process cron won't fire reliably; and reaching a
+  *private* RDS needs a VPC connector, which routes **all** egress through the VPC
+  and forces a NAT gateway (~$32/mo) for the outbound tastytrade/Anthropic calls —
+  more cost/complexity than the ALB it was meant to avoid. Great for plain request/
+  response web apps; wrong shape for a private-DB background worker.
+- **No ALB** — a single trading bot needs no load balancer or public endpoint. It's
+  a scheduled worker, not a request-driven web app.
+- **Chosen runtime shape:** EventBridge Scheduler → `ecs:RunTask` launches
+  short-lived Fargate tasks (`scan` / `manage` command overrides on the same image)
+  that run one cycle and exit. Billed per task-second, fully private, no inbound.
+  Human access on demand via CloudWatch Logs, `aws ecs run-task`, and an optional
+  SSM bastion for DB GUI. Full write-up + cost in `docs/aws-infrastructure.md`
+  ("Planned: scheduling & access model").
 
 ## Decisions To Make
 
