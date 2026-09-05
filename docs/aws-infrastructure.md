@@ -99,6 +99,67 @@ With no always-on server, you reach things on demand:
 The SSM bastion is optional — only add it when you want a SQL GUI. Log +
 `run-task` inspection needs nothing extra.
 
+### Bastion: one tunnel for DB + API
+
+You can't port-forward *directly* into a Fargate task — ECS Exec
+(`aws ecs execute-command`) only gives you a **shell inside the container**, not a
+TCP tunnel. SSM port-forwarding (`AWS-StartPortForwardingSessionToRemoteHost`) runs
+on an **SSM-managed EC2 instance** and forwards to any host it can reach in the VPC.
+So the DB tunnel already hops through a bastion — and that *same* bastion can forward
+to the task's `3100` too (RDS and the task are both just "remote hosts"):
+
+```bash
+# DB (stable endpoint)
+aws ssm start-session --target <bastion-id> \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["<rds-endpoint>"],"portNumber":["5432"],"localPortNumber":["5432"]}'
+
+# API (task private IP — changes every deploy; look it up first)
+aws ecs describe-tasks --cluster osai-trader \
+  --tasks $(aws ecs list-tasks --cluster osai-trader --service-name osai-trader --query 'taskArns[0]' --output text) \
+  --query 'tasks[0].attachments[0].details[?name==`privateIPv4Address`].value' --output text
+aws ssm start-session --target <bastion-id> \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["<task-private-ip>"],"portNumber":["3100"],"localPortNumber":["3100"]}'
+```
+
+Caveats: the task's private IP is **ephemeral** (RDS's endpoint is stable), and in
+the fully-scheduled model there's usually **no long-running task** to tunnel to — so
+the API tunnel mainly matters if you keep an always-on service.
+
+**Do it in CDK, flag-gated (off by default).** Don't hand-create it in the console —
+put it in the stack behind `-c bastion=true` so the default deploy stays lean and the
+tunnel is reproducible/teardownable. Minimal shape:
+
+```ts
+// after dbSg / serviceSg are defined
+if (this.node.tryGetContext('bastion') === 'true') {
+  const bastionSg = new ec2.SecurityGroup(this, 'BastionSg', {
+    vpc, description: 'osai-trader SSM bastion', allowAllOutbound: true,
+  }); // no inbound rules — SSM works via the agent's outbound polling
+  dbSg.addIngressRule(bastionSg, ec2.Port.tcp(5432), 'bastion to Postgres');
+  serviceSg.addIngressRule(bastionSg, ec2.Port.tcp(CONTAINER_PORT), 'bastion to API');
+
+  const bastion = new ec2.Instance(this, 'Bastion', {
+    vpc,
+    vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC }, // public IP so the SSM agent reaches SSM without a NAT
+    instanceType: ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.NANO),
+    machineImage: ec2.MachineImage.latestAmazonLinux2023({
+      cpuType: ec2.AmazonLinuxCpuType.ARM_64, // SSM agent preinstalled
+    }),
+    securityGroup: bastionSg,
+  });
+  bastion.role.addManagedPolicy(
+    iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
+  );
+  new cdk.CfnOutput(this, 'BastionId', { value: bastion.instanceId });
+}
+```
+
+`t4g.nano` ≈ **$3/mo** while it exists. No SSH key and no inbound port — access is
+purely via SSM (`start-session`), so there's no public attack surface. Tear it down
+by deploying without the flag.
+
 ## Estimated monthly cost
 
 **Current (always-on service):** Fargate ~$7 + RDS ~$12 + storage ~$2.50 +
