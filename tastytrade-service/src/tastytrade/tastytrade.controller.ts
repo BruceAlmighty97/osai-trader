@@ -25,6 +25,22 @@ export class TastytradeController {
     };
   }
 
+  /** Real broker account balances (NOT the imaginary paper account). */
+  @Get('balances')
+  @ApiOperation({
+    summary: 'Real tastytrade account balances (net liq, cash, buying power)',
+  })
+  balances(): Promise<any> {
+    return this.tt.getAccountBalances();
+  }
+
+  /** Real broker open positions (NOT the paper ledger at /paper/positions). */
+  @Get('positions')
+  @ApiOperation({ summary: 'Real tastytrade open positions' })
+  positions(): Promise<any> {
+    return this.tt.getBrokerPositions();
+  }
+
   /** Option chain — proves options data flows. Returns a readable summary. */
   @Get('chain')
   @ApiOperation({ summary: 'Fetch nested option chain (proves options data)' })

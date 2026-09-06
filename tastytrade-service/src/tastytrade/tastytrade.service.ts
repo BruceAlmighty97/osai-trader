@@ -141,6 +141,22 @@ export class TastytradeService implements OnModuleInit {
     return num;
   }
 
+  /** Real broker account balances (net liq, cash, buying power, ...). */
+  async getAccountBalances(): Promise<any> {
+    await this.ensureLogin();
+    const account = await this.getFirstAccountNumber();
+    return this.client.balancesAndPositionsService.getAccountBalanceValues(
+      account,
+    );
+  }
+
+  /** Real broker open positions (distinct from our imaginary paper ledger). */
+  async getBrokerPositions(): Promise<any> {
+    await this.ensureLogin();
+    const account = await this.getFirstAccountNumber();
+    return this.client.balancesAndPositionsService.getPositionsList(account);
+  }
+
   async getNestedChain(symbol: string): Promise<any> {
     await this.ensureLogin();
     return this.client.instrumentsService.getNestedOptionChain(symbol);
