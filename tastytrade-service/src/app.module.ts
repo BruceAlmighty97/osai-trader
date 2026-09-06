@@ -7,6 +7,8 @@ import { PersistenceModule } from './persistence/persistence.module';
 import { SocialModule } from './social/social.module';
 import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
+import { PaperModule } from './paper/paper.module';
+import { RiskModule } from './risk/risk.module';
 
 @Module({
   imports: [
@@ -35,6 +37,8 @@ import { HealthModule } from './health/health.module';
     }),
     AuthModule,
     HealthModule,
+    RiskModule,
+    PaperModule,
     TastytradeModule,
     StrategyModule,
     PersistenceModule,
