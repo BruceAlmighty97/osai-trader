@@ -1,15 +1,15 @@
-/** Shared enums for the social-sentiment scanner (Reddit ingestion). */
+/** Shared enums for the social-sentiment scanner (StockTwits ingestion). */
 
-/** Where a mention came from within Reddit. */
+/** What kind of social item a mention came from. */
 export enum SourceType {
-  POST = 'post',
-  COMMENT = 'comment', // Phase A ingests posts; comments are a later extension.
+  POST = 'post', // a StockTwits message (or Reddit post, historically)
+  COMMENT = 'comment',
 }
 
-/** How the ticker was recognized in the text — cashtags are high-confidence. */
+/** How the ticker was recognized. StockTwits attaches symbols explicitly. */
 export enum MatchType {
-  CASHTAG = 'cashtag', // "$SPY" — self-disambiguating, trusted
-  BARE = 'bare', // "SPY" — validated against a stoplist (noisier)
+  CASHTAG = 'cashtag', // explicit symbol tag — trusted
+  BARE = 'bare', // inferred from free text (noisier)
 }
 
 /**

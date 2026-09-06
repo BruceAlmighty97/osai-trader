@@ -1,7 +1,6 @@
 import { Controller, Get, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import {
-  AuditSummary,
   IngestSummary,
   SocialService,
   TrendingRow,
@@ -14,24 +13,26 @@ export class SocialController {
   constructor(private readonly social: SocialService) {}
 
   /**
-   * Poll the configured subreddits now and store extracted ticker mentions.
-   * Manual trigger for Phase A; a scheduled cron lands with the scheduler work.
+   * Pull StockTwits messages now and store ticker mentions (with sentiment).
+   * With no `symbols`, uses the current StockTwits trending list. Manual trigger
+   * for now; a scheduled cron lands with the trading-day scheduler.
    */
   @Post('ingest')
-  @ApiOperation({ summary: 'Poll subreddits now and store ticker mentions' })
-  @ApiQuery({ name: 'subreddits', required: false, description: 'comma-separated override' })
-  @ApiQuery({ name: 'sort', required: false, enum: ['hot', 'new', 'rising', 'top'] })
-  @ApiQuery({ name: 'limit', required: false, example: '50' })
+  @ApiOperation({ summary: 'Pull StockTwits messages now and store mentions' })
+  @ApiQuery({
+    name: 'symbols',
+    required: false,
+    description: 'comma-separated; defaults to StockTwits trending',
+  })
+  @ApiQuery({ name: 'limit', required: false, example: '30' })
   ingest(
-    @Query('subreddits') subreddits?: string,
-    @Query('sort') sort?: 'hot' | 'new' | 'rising' | 'top',
+    @Query('symbols') symbols?: string,
     @Query('limit') limit?: string,
   ): Promise<IngestSummary> {
     return this.social.ingest({
-      subreddits: subreddits
-        ? subreddits.split(',').map((s) => s.trim()).filter(Boolean)
+      symbols: symbols
+        ? symbols.split(',').map((s) => s.trim()).filter(Boolean)
         : undefined,
-      sort,
       limit: limit ? parseInt(limit, 10) : undefined,
     });
   }
@@ -39,23 +40,24 @@ export class SocialController {
   @Get('mentions')
   @ApiOperation({ summary: 'List raw stored mentions (newest first)' })
   @ApiQuery({ name: 'symbol', required: false, example: 'SPY' })
-  @ApiQuery({ name: 'subreddit', required: false, example: 'options' })
+  @ApiQuery({ name: 'source', required: false, example: 'stocktwits' })
   @ApiQuery({ name: 'limit', required: false, example: '100' })
   mentions(
     @Query('symbol') symbol?: string,
-    @Query('subreddit') subreddit?: string,
+    @Query('source') source?: string,
     @Query('limit') limit?: string,
   ): Promise<SocialMentionEntity[]> {
     return this.social.findMentions({
       symbol,
-      subreddit,
+      source,
       limit: limit ? parseInt(limit, 10) : undefined,
     });
   }
 
   @Get('trending')
   @ApiOperation({
-    summary: 'Rank symbols by attention over a rolling window (distinct authors + mentions)',
+    summary:
+      'Rank symbols by attention over a rolling window, with bull/bear lean',
   })
   @ApiQuery({ name: 'windowHours', required: false, example: '24' })
   @ApiQuery({ name: 'limit', required: false, example: '25' })
@@ -67,16 +69,5 @@ export class SocialController {
       windowHours ? parseInt(windowHours, 10) : undefined,
       limit ? parseInt(limit, 10) : undefined,
     );
-  }
-
-  /**
-   * Deletion-compliance audit: re-check the least-recently-verified live rows
-   * against Reddit and purge/tombstone any whose source is gone.
-   */
-  @Post('audit')
-  @ApiOperation({ summary: 'Run the deletion-compliance audit (purge deleted content)' })
-  @ApiQuery({ name: 'limit', required: false, example: '300' })
-  audit(@Query('limit') limit?: string): Promise<AuditSummary> {
-    return this.social.auditDeletions(limit ? parseInt(limit, 10) : undefined);
   }
 }

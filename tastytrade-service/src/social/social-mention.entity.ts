@@ -9,11 +9,9 @@ import {
 import { ContentStatus, MatchType, SourceType } from './social.types';
 
 /**
- * One row per (symbol, source) mention extracted from Reddit — the audit trail
- * behind trending detection. We keep full `title`/`bodyText` for live content;
- * the deletion-audit job purges + tombstones rows when Reddit reports the source
- * deleted/removed. The unique (symbol, sourceId) pair lets re-polling upsert
- * rather than duplicate. See docs/ideas-backlog.md (social-sentiment design).
+ * One row per (symbol, message) mention from a social source (StockTwits) — the
+ * audit trail behind trending detection. The unique (symbol, sourceId) pair lets
+ * re-ingesting upsert rather than duplicate. See docs/data-sources.md.
  */
 @Entity('social_mentions')
 @Unique('UQ_social_symbol_source', ['symbol', 'sourceId'])
@@ -26,14 +24,15 @@ export class SocialMentionEntity {
   @Column()
   symbol: string;
 
+  /** Social source, e.g. "stocktwits". */
   @Index()
   @Column()
-  subreddit: string;
+  source: string;
 
   @Column({ type: 'varchar', default: SourceType.POST })
   sourceType: SourceType;
 
-  /** Reddit fullname, e.g. `t3_abc123` (post) or `t1_...` (comment). */
+  /** Source-scoped message id, e.g. `st_<stocktwits message id>`. */
   @Column()
   sourceId: string;
 
@@ -43,7 +42,7 @@ export class SocialMentionEntity {
   @Column({ type: 'varchar', nullable: true })
   author: string | null;
 
-  /** Reddit score (upvotes − downvotes) at sample time. */
+  /** Engagement (StockTwits likes) at sample time. */
   @Column({ type: 'integer', default: 0 })
   upvotes: number;
 

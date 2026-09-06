@@ -144,8 +144,6 @@ export class OsaiTraderStack extends cdk.Stack {
         // Imaginary DB-only account — the app never submits broker orders.
         TRADING_MODE: 'paper',
         DB_SSL: 'true',
-        REDDIT_USER_AGENT: 'aws-ecs:osaitrader-social:v0.1 (by /u/BruceAlmighty97)',
-        SOCIAL_SUBREDDITS: 'options,thetagang,wallstreetbets,optionswheel',
       },
       secrets: {
         DB_HOST: ecs.Secret.fromSecretsManager(db.secret!, 'host'),
