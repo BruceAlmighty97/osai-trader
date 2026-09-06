@@ -25,7 +25,15 @@ Design notes:
 > Status: **target design, not yet built.** The current stack runs an always-on
 > service (`desiredCount: 1`) with no scheduler. This section is the direction we
 > chose after weighing App Runner / Render / ALB (see `docs/design-decisions.md`):
-> **stay in AWS, drop the ALB, drive the bot with EventBridge Scheduler.**
+> **stay in AWS, drop the ALB.**
+>
+> **UPDATE (2026-09-06): scheduling is now in-process, not EventBridge.** Because
+> the service stays always-on to serve the API, the trading-day scheduler runs
+> inside it via `@nestjs/schedule` (a 15-min market-hours tick → dispatcher), so
+> no EventBridge/RunTask is needed. See `docs/trading-day.md`. The
+> EventBridge → RunTask design below is retained only as the path IF we later
+> scale the service to 0 to go fully serverless — the dispatcher code is identical,
+> only the trigger changes.
 
 ### Why this shape
 
