@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { TastytradeModule } from './tastytrade/tastytrade.module';
 import { StrategyModule } from './strategy/strategy.module';
@@ -9,10 +10,12 @@ import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
 import { PaperModule } from './paper/paper.module';
 import { RiskModule } from './risk/risk.module';
+import { OrchestratorModule } from './orchestrator/orchestrator.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
@@ -37,6 +40,7 @@ import { RiskModule } from './risk/risk.module';
     }),
     AuthModule,
     HealthModule,
+    OrchestratorModule,
     RiskModule,
     PaperModule,
     TastytradeModule,
