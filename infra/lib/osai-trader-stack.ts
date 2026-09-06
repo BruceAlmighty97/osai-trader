@@ -15,8 +15,10 @@ export class OsaiTraderStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // "sandbox" (paper) by default; switch with: cdk deploy -c ttEnv=production
-    const ttEnv = this.node.tryGetContext('ttEnv') ?? 'sandbox';
+    // Production tastytrade by default now (real market data). Paper mode
+    // (TRADING_MODE=paper, below) keeps it read-only — no orders are ever sent.
+    // Override with: cdk deploy -c ttEnv=sandbox
+    const ttEnv = this.node.tryGetContext('ttEnv') ?? 'production';
     // Your IP in CIDR form to open the REST API, e.g. -c allowedIngressCidr=1.2.3.4/32
     // Left unset, nothing can reach the API (the bot still runs and has egress).
     const allowedIngressCidr = this.node.tryGetContext('allowedIngressCidr');
@@ -139,6 +141,8 @@ export class OsaiTraderStack extends cdk.Stack {
         NODE_ENV: 'production',
         PORT: String(CONTAINER_PORT),
         TT_ENV: ttEnv,
+        // Imaginary DB-only account — the app never submits broker orders.
+        TRADING_MODE: 'paper',
         DB_SSL: 'true',
         REDDIT_USER_AGENT: 'aws-ecs:osaitrader-social:v0.1 (by /u/BruceAlmighty97)',
         SOCIAL_SUBREDDITS: 'options,thetagang,wallstreetbets,optionswheel',
@@ -151,6 +155,16 @@ export class OsaiTraderStack extends cdk.Stack {
         DB_NAME: ecs.Secret.fromSecretsManager(db.secret!, 'dbname'),
         TT_USERNAME: ecs.Secret.fromSecretsManager(appSecrets, 'TT_USERNAME'),
         TT_PASSWORD: ecs.Secret.fromSecretsManager(appSecrets, 'TT_PASSWORD'),
+        // OAuth2 (required for production). Must exist in the secret BEFORE
+        // deploying this, or the task fails to start.
+        TT_REFRESH_TOKEN: ecs.Secret.fromSecretsManager(
+          appSecrets,
+          'TT_REFRESH_TOKEN',
+        ),
+        TT_CLIENT_SECRET: ecs.Secret.fromSecretsManager(
+          appSecrets,
+          'TT_CLIENT_SECRET',
+        ),
         ANTHROPIC_API_KEY: ecs.Secret.fromSecretsManager(
           appSecrets,
           'ANTHROPIC_API_KEY',
