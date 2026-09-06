@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 
 /**
@@ -8,8 +8,12 @@ import { Cron } from '@nestjs/schedule';
  * top of this. See docs/trading-day.md.
  */
 @Injectable()
-export class OrchestratorService {
+export class OrchestratorService implements OnModuleInit {
   private readonly logger = new Logger(OrchestratorService.name);
+
+  onModuleInit(): void {
+    this.logger.log('Orchestrator scheduler armed — event-loop tick registered.');
+  }
 
   /** Every 15 minutes (:00, :15, :30, :45). */
   @Cron('0 */15 * * * *', { name: 'osai-tick' })
