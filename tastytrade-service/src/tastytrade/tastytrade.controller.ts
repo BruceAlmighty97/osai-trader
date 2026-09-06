@@ -207,10 +207,15 @@ export class TastytradeController {
     try {
       return await this.tt.getMarketMetrics([symbol.toUpperCase()]);
     } catch (err: any) {
-      // Surface the real reason (often unavailable on the demo/sandbox feed).
+      // Surface the real reason (status/url/body) to diagnose auth vs 404 vs data.
       return {
         error: 'market-metrics request failed',
-        detail: err?.response?.data ?? err?.message ?? String(err),
+        status: err?.response?.status,
+        statusText: err?.response?.statusText,
+        url: err?.config?.url,
+        method: err?.config?.method,
+        data: err?.response?.data,
+        message: err?.message,
       };
     }
   }

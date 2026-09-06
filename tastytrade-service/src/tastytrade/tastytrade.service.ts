@@ -26,12 +26,23 @@ export class TastytradeService implements OnModuleInit {
   private readonly logger = new Logger(TastytradeService.name);
   private readonly client: TastytradeClient;
   private readonly envName: string;
+  private readonly baseUrl: string;
+  private readonly useOAuth: boolean;
   private loggedIn = false;
+  private accessToken: string | null = null;
+  private accessTokenExpiresAt = 0; // epoch ms
 
   constructor(private readonly config: ConfigService) {
     this.envName = this.config.get<string>('TT_ENV', 'sandbox');
     const env = this.envName === 'production' ? ENVS.production : ENVS.sandbox;
+    this.baseUrl = env.base;
     this.client = new TastytradeClient(env.base, env.streamer);
+    // OAuth2 when a refresh token + client secret are present (required for
+    // production); otherwise fall back to username/password session auth.
+    this.useOAuth = !!(
+      this.config.get<string>('TT_REFRESH_TOKEN') &&
+      this.config.get<string>('TT_CLIENT_SECRET')
+    );
   }
 
   async onModuleInit() {
@@ -45,6 +56,10 @@ export class TastytradeService implements OnModuleInit {
   }
 
   private async ensureLogin(): Promise<void> {
+    if (this.useOAuth) {
+      await this.ensureOAuthToken();
+      return;
+    }
     if (this.loggedIn) return;
     const user = this.config.get<string>('TT_USERNAME');
     const pass = this.config.get<string>('TT_PASSWORD');
@@ -53,7 +68,50 @@ export class TastytradeService implements OnModuleInit {
     }
     await this.client.sessionService.login(user, pass);
     this.loggedIn = true;
-    this.logger.log(`Logged into tastytrade (${this.envName})`);
+    this.logger.log(`Logged into tastytrade (${this.envName}, session auth)`);
+  }
+
+  /**
+   * OAuth2: exchange the long-lived refresh token for a 15-min access token and
+   * inject it as the SDK's Authorization header. Every API call runs through
+   * ensureLogin(), so this re-mints lazily on expiry (60s safety buffer).
+   */
+  private async ensureOAuthToken(): Promise<void> {
+    if (this.accessToken && Date.now() < this.accessTokenExpiresAt - 60_000) {
+      return;
+    }
+    const secret = this.config.get<string>('TT_CLIENT_SECRET');
+    const refresh = this.config.get<string>('TT_REFRESH_TOKEN');
+    if (!secret || !refresh) {
+      throw new Error('TT_CLIENT_SECRET / TT_REFRESH_TOKEN not set');
+    }
+    const resp = await fetch(`${this.baseUrl}/oauth/token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'osaitrader/0.1',
+      },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: refresh,
+        client_secret: secret,
+      }),
+    });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '');
+      throw new Error(`OAuth token request failed: ${resp.status} ${body}`);
+    }
+    const data = (await resp.json()) as {
+      access_token: string;
+      expires_in?: number;
+    };
+    this.accessToken = data.access_token;
+    this.accessTokenExpiresAt = Date.now() + (data.expires_in ?? 900) * 1000;
+    this.client.httpClient.session.authToken = `Bearer ${this.accessToken}`;
+    this.loggedIn = true;
+    this.logger.log(
+      `tastytrade OAuth token acquired (${this.envName}), valid ${data.expires_in ?? 900}s`,
+    );
   }
 
   isLoggedIn(): boolean {
@@ -124,7 +182,12 @@ export class TastytradeService implements OnModuleInit {
   /** Volatility / liquidity metrics (IV rank, IV percentile, HV, beta, ...). */
   async getMarketMetrics(symbols: string[]): Promise<any> {
     await this.ensureLogin();
-    return this.client.marketMetricsService.getMarketMetrics({ symbols });
+    // tastytrade wants a comma-separated `symbols=SPY,QQQ`. The SDK serializes
+    // arrays as `symbols[]=SPY` (qs brackets), which production 400s — so pass a
+    // pre-joined string to get the flat `symbols=` form.
+    return this.client.marketMetricsService.getMarketMetrics({
+      symbols: symbols.join(','),
+    });
   }
 
   /** DXLink quote token + streamer URL (for live quotes/greeks). */
