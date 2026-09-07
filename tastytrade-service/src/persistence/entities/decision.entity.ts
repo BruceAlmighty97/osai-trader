@@ -23,6 +23,11 @@ export class DecisionEntity {
   @Column({ type: 'varchar', nullable: true })
   symbol: string | null;
 
+  /** Which experiment arm made this call. Null for ad-hoc /strategy runs. */
+  @Index()
+  @Column({ type: 'integer', nullable: true })
+  accountId: number | null;
+
   @Column({ type: 'varchar', default: DecisionTrigger.MANUAL })
   trigger: DecisionTrigger;
 

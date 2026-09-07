@@ -4,11 +4,14 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PhaseContext, PhaseResult, TradingPhase } from './trading.types';
 import { ShortlistCandidate, TradingDayEntity } from './trading-day.entity';
-import { ScoreParts, SelectorChoice, SpreadPlan } from './entry.types';
+import { ArmParams, ScoreParts, SelectorChoice, SpreadPlan } from './entry.types';
 import { EntryAnalystService } from './entry-analyst.service';
 import { TastytradeService } from '../tastytrade/tastytrade.service';
 import { PaperService } from '../paper/paper.service';
+import { PaperAccountEntity } from '../paper/paper-account.entity';
+import { PaperAccountSummary } from '../paper/paper.types';
 import { DecisionEntity } from '../persistence/entities/decision.entity';
+import { PositionEntity } from '../persistence/entities/position.entity';
 import {
   DecisionTrigger,
   PositionStatus,
@@ -18,37 +21,54 @@ import {
 /** A priced spread before scoring — everything except the score itself. */
 type UnscoredPlan = Omit<SpreadPlan, 'score' | 'scoreParts'>;
 
+/** What one arm actually did this tick. */
+interface ArmOutcome {
+  arm: string;
+  opened: number;
+  summary: string;
+  openedId?: number | null;
+  decisionId?: number;
+  selector?: string;
+  attempts?: string[];
+}
+
+/** What one arm intends to do this tick, resolved before any chain is fetched. */
+interface ArmRun {
+  arm: PaperAccountEntity;
+  params: ArmParams;
+  account: PaperAccountSummary;
+  open: PositionEntity[];
+  candidates: ShortlistCandidate[];
+  riskBudget: number;
+  /** Set when the arm sits this tick out — no candidates need pricing. */
+  skip?: string;
+}
+
 /**
- * 10:00-11:30 ET, every 15 min — open the single best play, or pass.
+ * 10:00-11:30 ET, every 15 min — each experiment arm opens its best play, or passes.
  *
- * Two stages, deliberately separated:
+ * Three stages:
  *
- *   1. BUILD A SLATE (always mechanical). Take the top N candidates off the
- *      pre-market shortlist, pull their chains IN PARALLEL, construct a concrete
- *      bull put spread for each, and score them 0-100 on hard economics. All
- *      arithmetic lives here and only here.
- *   2. CHOOSE ONE (mechanical or AI, per ENTRY_SELECTOR). The mechanical
- *      selector takes the top score. The AI selector gets the same slate plus
- *      the open book and applies judgment the score cannot express — chiefly
- *      whether a candidate duplicates exposure we already carry.
+ *   1. PLAN THE TICK. Every enabled arm resolves its own params (env defaults +
+ *      arm overrides) and its own candidate list, excluding what IT already holds.
+ *   2. PRICE ONCE. Union every arm's candidates and fetch each chain snapshot a
+ *      single time, in parallel. Arms then score off the SAME snapshot, so a
+ *      price that moved between two fetches can never explain a difference in
+ *      outcome. Each snapshot is an ~8s DXLink subscription, so this is also what
+ *      keeps a multi-arm tick affordable.
+ *   3. CHOOSE AND OPEN, per arm, into that arm's own book.
  *
- * The baseline pick is logged on every run whether or not the AI is driving, so
- * the AI's lift over the mechanical score is measurable rather than assumed.
+ * Arms keep separate books on purpose. Once they pick differently their holdings
+ * diverge, which is the whole point — a portfolio-level effect ("it declined to
+ * double up on semis") is invisible if the arms share a book.
  *
- * Polling != over-trading: each tick opens at most one position and the risk
- * gate caps the ceiling, so later ticks in the window usually pass.
+ * The mechanical baseline is logged for every arm on every run, so an arm's lift
+ * over plain top-score is measurable rather than assumed.
  */
 @Injectable()
 export class EntryService {
   private readonly logger = new Logger(EntryService.name);
-  private readonly targetDelta: number;
-  private readonly widthPct: number;
-  private readonly minCreditToWidth: number;
-  private readonly targetDte: number;
-  private readonly maxNewPerRun: number;
-  private readonly maxQuoteSpreadPct: number;
-  private readonly slateSize: number;
-  private readonly selector: 'mechanical' | 'ai';
+  private readonly defaults: ArmParams;
 
   constructor(
     @InjectRepository(TradingDayEntity)
@@ -60,21 +80,22 @@ export class EntryService {
     private readonly analyst: EntryAnalystService,
     config: ConfigService,
   ) {
-    this.targetDelta = num(config.get('ENTRY_TARGET_DELTA'), 0.16);
-    this.widthPct = num(config.get('ENTRY_WIDTH_PCT'), 0.05);
-    this.minCreditToWidth = num(config.get('ENTRY_MIN_CREDIT_RATIO'), 0.15);
-    this.targetDte = num(config.get('ENTRY_TARGET_DTE'), 45);
-    this.maxNewPerRun = num(config.get('ENTRY_MAX_NEW_PER_RUN'), 1);
-    this.maxQuoteSpreadPct = num(config.get('ENTRY_MAX_QUOTE_SPREAD_PCT'), 0.5);
-    this.slateSize = num(config.get('ENTRY_SLATE_SIZE'), 5);
-    this.selector =
-      String(config.get('ENTRY_SELECTOR') ?? 'mechanical').toLowerCase() === 'ai'
-        ? 'ai'
-        : 'mechanical';
+    this.defaults = {
+      selector:
+        String(config.get('ENTRY_SELECTOR') ?? 'mechanical').toLowerCase() === 'ai'
+          ? 'ai'
+          : 'mechanical',
+      targetDelta: num(config.get('ENTRY_TARGET_DELTA'), 0.16),
+      widthPct: num(config.get('ENTRY_WIDTH_PCT'), 0.05),
+      minCreditToWidth: num(config.get('ENTRY_MIN_CREDIT_RATIO'), 0.15),
+      targetDte: num(config.get('ENTRY_TARGET_DTE'), 45),
+      maxNewPerRun: num(config.get('ENTRY_MAX_NEW_PER_RUN'), 1),
+      maxQuoteSpreadPct: num(config.get('ENTRY_MAX_QUOTE_SPREAD_PCT'), 0.5),
+      slateSize: num(config.get('ENTRY_SLATE_SIZE'), 5),
+      model: config.get('ENTRY_MODEL'),
+    };
     this.logger.log(
-      `entry configured: selector=${this.selector} slateSize=${this.slateSize} ` +
-        `targetDelta=${this.targetDelta} targetDte=${this.targetDte} ` +
-        `minCreditToWidth=${this.minCreditToWidth} maxNewPerRun=${this.maxNewPerRun}`,
+      `entry defaults: ${JSON.stringify(this.defaults)} (arms may override any of these)`,
     );
   }
 
@@ -87,53 +108,190 @@ export class EntryService {
       return { phase: TradingPhase.ENTRY, ran: false, summary: msg };
     }
 
-    const account = await this.paper.getSummary();
-    const open = await this.paper.listPositions(PositionStatus.OPEN);
-    const heldSymbols = new Set(open.map((p) => p.symbol));
+    const arms = await this.paper.listArms(true);
+    this.logger.log(
+      `entry ${date}: ${day.shortlist.length} candidates | ${arms.length} active arm(s): ` +
+        arms.map((a) => `${a.name}(${a.config?.selector ?? this.defaults.selector})`).join(', '),
+    );
+
+    // ---- Stage 1: what does each arm want to look at? ---------------------
+    const runs: ArmRun[] = [];
+    for (const arm of arms) {
+      runs.push(await this.planArm(arm, day.shortlist));
+    }
+
+    // ---- Stage 2: price the union of all arms' candidates, once ----------
+    const snapshots = await this.priceUnion(runs);
+
+    // ---- Stage 3: each arm chooses and opens into its own book -----------
+    const results: ArmOutcome[] = [];
+    let openedTotal = 0;
+    for (const run of runs) {
+      const outcome = await this.runArm(date, run, snapshots);
+      openedTotal += outcome.opened;
+      results.push(outcome);
+    }
+
+    const summary = results.map((r) => `${r.arm}: ${r.summary}`).join(' | ');
+    this.logger.log(`entry ${date}: ${summary}`);
+
+    return {
+      phase: TradingPhase.ENTRY,
+      ran: openedTotal > 0,
+      summary,
+      details: { date, opened: openedTotal, arms: results },
+    };
+  }
+
+  /** Resolve an arm's params, book and candidate list. No network calls. */
+  private async planArm(
+    arm: PaperAccountEntity,
+    shortlist: ShortlistCandidate[],
+  ): Promise<ArmRun> {
+    const params: ArmParams = { ...this.defaults, ...(arm.config ?? {}) };
+    const account = await this.paper.getSummary(arm.name);
+    const open = await this.paper.listPositions(PositionStatus.OPEN, arm.name);
+    const held = new Set(open.map((p) => p.symbol));
     const riskBudget =
       (account.settledValue * account.rules.maxRiskPerTradePct) / 100;
 
     this.logger.log(
-      `entry ${date}: ${day.shortlist.length} candidates | open=${heldSymbols.size}/` +
-        `${account.rules.maxConcurrentPositions} | bpAvail=$${account.buyingPowerAvailable} | ` +
-        `riskBudget=$${round2(riskBudget)} | selector=${this.selector}`,
+      `entry[${arm.name}]: selector=${params.selector} | open=${held.size}/` +
+        `${account.rules.maxConcurrentPositions} | settled=$${account.settledValue} | ` +
+        `bpAvail=$${account.buyingPowerAvailable} | riskBudget=$${round2(riskBudget)}`,
     );
 
-    if (heldSymbols.size >= account.rules.maxConcurrentPositions) {
-      const msg = `at max concurrent positions (${account.rules.maxConcurrentPositions}) — passing`;
-      this.logger.log(`entry: ${msg}`);
-      return { phase: TradingPhase.ENTRY, ran: false, summary: msg };
+    if (held.size >= account.rules.maxConcurrentPositions) {
+      const skip = `at max concurrent positions (${account.rules.maxConcurrentPositions})`;
+      this.logger.log(`entry[${arm.name}]: ${skip} — passing`);
+      return { arm, params, account, open, candidates: [], riskBudget, skip };
     }
 
-    // ---- Stage 1: build and score the slate -------------------------------
-    const { slate, misses } = await this.buildSlate(day.shortlist, heldSymbols, riskBudget);
+    const candidates = shortlist
+      .filter((c) => !held.has(c.symbol))
+      .slice(0, params.slateSize);
+
+    return { arm, params, account, open, candidates, riskBudget };
+  }
+
+  /**
+   * Fetch every (symbol, DTE) any arm needs — once, in parallel.
+   *
+   * Arms usually overlap almost entirely, so this is typically 5-6 fetches
+   * instead of 5 per arm, and it guarantees both arms reason over identical
+   * prices rather than two snapshots taken seconds apart.
+   */
+  private async priceUnion(runs: ArmRun[]): Promise<Map<string, any>> {
+    const wanted = new Map<string, { symbol: string; dte: number }>();
+    for (const run of runs) {
+      for (const c of run.candidates) {
+        wanted.set(snapKey(c.symbol, run.params.targetDte), {
+          symbol: c.symbol,
+          dte: run.params.targetDte,
+        });
+      }
+    }
+
+    const snapshots = new Map<string, any>();
+    if (!wanted.size) return snapshots;
+
+    const requestedTotal = runs.reduce((n, r) => n + r.candidates.length, 0);
+    this.logger.log(
+      `entry: pricing ${wanted.size} unique chain(s) in parallel ` +
+        `(${requestedTotal} arm-requests deduped) — ${[...wanted.values()].map((w) => `${w.symbol}@${w.dte}d`).join(', ')}`,
+    );
+
+    const started = Date.now();
+    const keys = [...wanted.keys()];
+    const settled = await Promise.allSettled(
+      keys.map((k) => {
+        const { symbol, dte } = wanted.get(k)!;
+        return this.tastytrade.getGreeksSnapshot(symbol, dte, 25, 8);
+      }),
+    );
+    settled.forEach((r, i) => {
+      if (r.status === 'fulfilled') snapshots.set(keys[i], r.value);
+      else
+        this.logger.warn(
+          `entry: chain lookup failed for ${keys[i]} — ${errMsg(r.reason)}`,
+        );
+    });
+
+    this.logger.log(
+      `entry: priced ${snapshots.size}/${wanted.size} chain(s) in ${Date.now() - started}ms`,
+    );
+    return snapshots;
+  }
+
+  /** Score, choose and open for a single arm. */
+  private async runArm(
+    date: string,
+    run: ArmRun,
+    snapshots: Map<string, any>,
+  ): Promise<ArmOutcome> {
+    const { arm, params, account, open, riskBudget } = run;
+    const tag = `entry[${arm.name}]`;
+
+    if (run.skip) {
+      return { arm: arm.name, opened: 0, summary: run.skip };
+    }
+
+    // ---- Build this arm's slate from the shared snapshots ----------------
+    const slate: SpreadPlan[] = [];
+    const misses: string[] = [];
+    for (const c of run.candidates) {
+      const snap = snapshots.get(snapKey(c.symbol, params.targetDte));
+      if (!snap) {
+        misses.push(`${c.symbol}:chain-error`);
+        continue;
+      }
+      const plan = this.planFromSnapshot(c, snap, params, riskBudget, tag);
+      if (!plan) {
+        misses.push(`${c.symbol}:no-viable-spread`);
+        continue;
+      }
+      slate.push(this.scorePlan(plan, params));
+    }
+    slate.sort((a, b) => b.score - a.score);
+
+    this.logger.log(
+      `${tag}: ${slate.length} viable of ${run.candidates.length} examined`,
+    );
+    slate.forEach((p, i) => {
+      this.logger.log(
+        `${tag}:   [${i}] ${p.symbol} score ${p.score.toFixed(1)} | ` +
+          `${p.shortStrike}/${p.longStrike}P ${p.expiration} (${p.dte}d) | ` +
+          `credit $${round2(p.credit * 100)} risk $${round2(p.riskPerShare * 100)} ` +
+          `c/w ${(p.creditToWidth * 100).toFixed(0)}% | delta ${p.shortDelta.toFixed(3)} | ` +
+          `IVR ${p.ivRank ?? 'n/a'} | qspread ${(p.avgRelSpread * 100).toFixed(1)}% | ` +
+          `parts r/r=${p.scoreParts.creditToWidth.toFixed(2)} d=${p.scoreParts.deltaFit.toFixed(2)} ` +
+          `ivr=${p.scoreParts.ivRank.toFixed(2)} liq=${p.scoreParts.liquidity.toFixed(2)}`,
+      );
+    });
+
     if (!slate.length) {
-      const msg = `no viable spread on any of ${misses.length} candidate(s) examined`;
-      this.logger.log(`entry ${date}: ${msg}`);
-      return {
-        phase: TradingPhase.ENTRY,
-        ran: false,
-        summary: msg,
-        details: { date, opened: 0, attempts: misses },
-      };
+      const msg = `no viable spread on any of ${run.candidates.length} candidate(s)`;
+      this.logger.log(`${tag}: ${msg}`);
+      return { arm: arm.name, opened: 0, summary: msg, attempts: misses };
     }
 
-    // ---- Stage 2: choose one ----------------------------------------------
-    const choice = await this.chooseFromSlate(date, slate, account, open, riskBudget);
-    const decision = await this.recordDecision(date, slate, choice);
+    // ---- Choose ----------------------------------------------------------
+    const choice = await this.chooseFromSlate(date, run, slate, tag);
+    const decision = await this.recordDecision(date, arm, slate, choice);
 
     if (choice.pick === null) {
-      const msg = `passed on all ${slate.length} plan(s) — ${choice.rationale}`;
-      this.logger.log(`entry ${date}: ${msg}`);
+      const msg = `passed on all ${slate.length} plan(s)`;
+      this.logger.log(`${tag}: ${msg} — ${choice.rationale}`);
       return {
-        phase: TradingPhase.ENTRY,
-        ran: false,
+        arm: arm.name,
+        opened: 0,
         summary: msg,
-        details: { date, opened: 0, decisionId: decision.id, attempts: misses },
+        decisionId: decision.id,
+        attempts: misses,
       };
     }
 
-    // ---- Open, falling through by score if the risk gate rejects ----------
+    // ---- Open, falling through by score if the risk gate rejects ---------
     const attempts = [...misses];
     const order = [
       choice.pick,
@@ -143,18 +301,19 @@ export class EntryService {
     let openedId: number | null = null;
 
     for (const idx of order) {
-      if (opened >= this.maxNewPerRun) break;
+      if (opened >= params.maxNewPerRun) break;
       const plan = slate[idx];
       const isFallback = idx !== choice.pick;
       if (isFallback) {
         this.logger.log(
-          `entry: falling back to next-best ${plan.symbol} (score ${plan.score.toFixed(1)}) ` +
+          `${tag}: falling back to next-best ${plan.symbol} (score ${plan.score.toFixed(1)}) ` +
             `after the risk gate rejected ${slate[choice.pick].symbol}`,
         );
       }
 
       try {
         const position = await this.paper.openFromSuggestion({
+          account: arm.name,
           symbol: plan.symbol,
           strategy: StrategyType.BULL_PUT_SPREAD,
           expiration: plan.expiration,
@@ -172,99 +331,32 @@ export class EntryService {
         openedId = position.id;
         attempts.push(`${plan.symbol}:OPENED#${position.id}`);
         this.logger.log(
-          `entry: OPENED ${plan.symbol} id=${position.id} score ${plan.score.toFixed(1)} ` +
+          `${tag}: OPENED ${plan.symbol} id=${position.id} score ${plan.score.toFixed(1)} ` +
             `credit $${round2(plan.credit * 100)} risk $${round2(plan.riskPerShare * 100)} ` +
             `decision=${decision.id}`,
         );
       } catch (err) {
         // Risk gate rejections land here and are expected, not failures.
-        this.logger.log(`entry: ${plan.symbol} not opened — ${errMsg(err)}`);
+        this.logger.log(`${tag}: ${plan.symbol} not opened — ${errMsg(err)}`);
         attempts.push(`${plan.symbol}:gate-rejected`);
       }
     }
 
     const summary =
       opened > 0
-        ? `opened ${opened} position(s): ${attempts.filter((a) => a.includes('OPENED')).join(', ')}`
-        : `no position opened (${slate.length} plan(s) scored, all rejected by the risk gate)`;
-    this.logger.log(`entry ${date}: ${summary}`);
+        ? `opened ${attempts.filter((a) => a.includes('OPENED')).join(', ')}`
+        : `nothing opened (${slate.length} scored, all gate-rejected)`;
+    this.logger.log(`${tag}: ${summary}`);
 
     return {
-      phase: TradingPhase.ENTRY,
-      ran: opened > 0,
+      arm: arm.name,
+      opened,
+      openedId,
       summary,
-      details: {
-        date,
-        opened,
-        openedId,
-        decisionId: decision.id,
-        selector: choice.source,
-        attempts,
-      },
+      decisionId: decision.id,
+      selector: choice.source,
+      attempts,
     };
-  }
-
-  /**
-   * Price every eligible candidate CONCURRENTLY and score the survivors.
-   *
-   * Parallelism is the whole point: each chain snapshot is an ~8s DXLink
-   * subscription, so scoring five sequentially would cost 40s of a 15-minute
-   * tick and tempt us back into first-fit. Each `streamSnapshot` builds its own
-   * streamer and listeners, so the calls are independent.
-   */
-  private async buildSlate(
-    shortlist: ShortlistCandidate[],
-    heldSymbols: Set<string>,
-    riskBudget: number,
-  ): Promise<{ slate: SpreadPlan[]; misses: string[] }> {
-    const eligible = shortlist
-      .filter((c) => !heldSymbols.has(c.symbol))
-      .slice(0, this.slateSize);
-
-    const skipped = shortlist.length - shortlist.filter((c) => !heldSymbols.has(c.symbol)).length;
-    this.logger.log(
-      `entry: pricing top ${eligible.length} of ${shortlist.length} candidates in parallel ` +
-        `(${skipped} skipped as already held) — ${eligible.map((c) => c.symbol).join(', ')}`,
-    );
-
-    const started = Date.now();
-    const settled = await Promise.allSettled(
-      eligible.map((c) => this.selectSpread(c, riskBudget)),
-    );
-
-    const slate: SpreadPlan[] = [];
-    const misses: string[] = [];
-    settled.forEach((r, i) => {
-      const symbol = eligible[i].symbol;
-      if (r.status === 'rejected') {
-        this.logger.warn(`entry: ${symbol} chain lookup failed — ${errMsg(r.reason)}`);
-        misses.push(`${symbol}:chain-error`);
-      } else if (!r.value) {
-        misses.push(`${symbol}:no-viable-spread`);
-      } else {
-        slate.push(this.scorePlan(r.value));
-      }
-    });
-
-    slate.sort((a, b) => b.score - a.score);
-
-    this.logger.log(
-      `entry: priced ${eligible.length} candidate(s) in ${Date.now() - started}ms — ` +
-        `${slate.length} viable, ${misses.length} dropped`,
-    );
-    slate.forEach((p, i) => {
-      this.logger.log(
-        `entry:   [${i}] ${p.symbol} score ${p.score.toFixed(1)} | ` +
-          `${p.shortStrike}/${p.longStrike}P ${p.expiration} (${p.dte}d) | ` +
-          `credit $${round2(p.credit * 100)} risk $${round2(p.riskPerShare * 100)} ` +
-          `c/w ${(p.creditToWidth * 100).toFixed(0)}% | delta ${p.shortDelta.toFixed(3)} | ` +
-          `IVR ${p.ivRank ?? 'n/a'} | qspread ${(p.avgRelSpread * 100).toFixed(1)}% | ` +
-          `parts r/r=${p.scoreParts.creditToWidth.toFixed(2)} d=${p.scoreParts.deltaFit.toFixed(2)} ` +
-          `ivr=${p.scoreParts.ivRank.toFixed(2)} liq=${p.scoreParts.liquidity.toFixed(2)}`,
-      );
-    });
-
-    return { slate, misses };
   }
 
   /**
@@ -274,7 +366,7 @@ export class EntryService {
    * baking a coefficient for it would be false precision. It is handed to the
    * AI selector instead, where a qualitative read belongs.
    */
-  private scorePlan(p: UnscoredPlan): SpreadPlan {
+  private scorePlan(p: UnscoredPlan, params: ArmParams): SpreadPlan {
     const parts: ScoreParts = {
       // 35% of width is an excellent credit for a defined-risk spread; the 15%
       // floor is already enforced upstream, so this band is the useful range.
@@ -284,13 +376,13 @@ export class EntryService {
       deltaFit:
         1 -
         clamp01(
-          Math.abs(Math.abs(p.shortDelta) - this.targetDelta) / this.targetDelta,
+          Math.abs(Math.abs(p.shortDelta) - params.targetDelta) / params.targetDelta,
         ),
       // IV rank 30 is the qualification floor and 80+ is genuinely rich premium;
       // map that band rather than 0-100, which would compress all real signal.
       ivRank: clamp01(((p.ivRank ?? 30) - 30) / 50),
       // Quote tightness relative to the threshold that would have rejected it.
-      liquidity: 1 - clamp01(p.avgRelSpread / this.maxQuoteSpreadPct),
+      liquidity: 1 - clamp01(p.avgRelSpread / params.maxQuoteSpreadPct),
     };
 
     const score =
@@ -303,19 +395,26 @@ export class EntryService {
     return { ...p, score, scoreParts: parts };
   }
 
-  /** Mechanical top-score, or the AI analyst when ENTRY_SELECTOR=ai. */
+  /** Mechanical top-score, or the AI analyst when the arm's selector is 'ai'. */
   private async chooseFromSlate(
     date: string,
+    run: ArmRun,
     slate: SpreadPlan[],
-    account: Awaited<ReturnType<PaperService['getSummary']>>,
-    open: Awaited<ReturnType<PaperService['listPositions']>>,
-    riskBudget: number,
+    tag: string,
   ): Promise<SelectorChoice> {
     const baseline = slate[0];
 
     let choice: SelectorChoice;
-    if (this.selector === 'ai') {
-      choice = await this.analyst.choose({ date, slate, account, open, riskBudget });
+    if (run.params.selector === 'ai') {
+      choice = await this.analyst.choose({
+        date,
+        slate,
+        account: run.account,
+        open: run.open,
+        riskBudget: run.riskBudget,
+        model: run.params.model,
+        armTag: tag,
+      });
     } else {
       choice = {
         source: 'mechanical',
@@ -324,25 +423,25 @@ export class EntryService {
       };
     }
 
-    // Always record what the mechanical baseline WOULD have done. Without this
-    // line there is no way to tell later whether the AI earned its keep.
+    // Always record what plain top-score WOULD have done. Without this line
+    // there is no way to tell later whether the arm's selector earned its keep.
     this.logger.log(
-      `entry: baseline (mechanical) pick = ${baseline.symbol} @ ${baseline.score.toFixed(1)}`,
+      `${tag}: baseline (top score) = ${baseline.symbol} @ ${baseline.score.toFixed(1)}`,
     );
     if (choice.source === 'ai') {
       if (choice.pick === null) {
         this.logger.log(
-          `entry: AI DIVERGED from baseline — passed on the whole slate ` +
+          `${tag}: AI DIVERGED — passed on the whole slate ` +
             `(baseline would have opened ${baseline.symbol})`,
         );
       } else if (choice.pick !== 0) {
         const picked = slate[choice.pick];
         this.logger.log(
-          `entry: AI DIVERGED from baseline — chose ${picked.symbol} ` +
-            `(${picked.score.toFixed(1)}) over ${baseline.symbol} (${baseline.score.toFixed(1)})`,
+          `${tag}: AI DIVERGED — chose ${picked.symbol} (${picked.score.toFixed(1)}) ` +
+            `over ${baseline.symbol} (${baseline.score.toFixed(1)})`,
         );
       } else {
-        this.logger.log(`entry: AI AGREED with baseline (${baseline.symbol})`);
+        this.logger.log(`${tag}: AI AGREED with baseline (${baseline.symbol})`);
       }
     }
 
@@ -352,12 +451,14 @@ export class EntryService {
   /** Durable audit row: the slate, the choice, and the reasoning behind it. */
   private async recordDecision(
     date: string,
+    arm: PaperAccountEntity,
     slate: SpreadPlan[],
     choice: SelectorChoice,
   ): Promise<DecisionEntity> {
     const picked = choice.pick === null ? null : slate[choice.pick];
     const decision = this.decisions.create({
       symbol: picked?.symbol ?? null,
+      accountId: arm.id,
       trigger: DecisionTrigger.CRON,
       strategy: picked ? StrategyType.BULL_PUT_SPREAD : 'no_trade',
       marketAssessment: choice.portfolioFit ?? null,
@@ -365,6 +466,7 @@ export class EntryService {
       proposedTrade: picked ? ({ ...picked } as Record<string, unknown>) : null,
       snapshot: {
         date,
+        arm: arm.name,
         selector: choice.source,
         baseline: { symbol: slate[0].symbol, score: slate[0].score },
         slate: slate as unknown as Record<string, unknown>[],
@@ -377,8 +479,8 @@ export class EntryService {
     });
     const saved = await this.decisions.save(decision);
     this.logger.log(
-      `persisted decision ${saved.id} for ${date}: ${saved.strategy} ` +
-        `${saved.symbol ?? '(none)'} via ${choice.source}`,
+      `persisted decision ${saved.id} for ${date} arm=${arm.name}: ` +
+        `${saved.strategy} ${saved.symbol ?? '(none)'} via ${choice.source}`,
     );
     return saved;
   }
@@ -404,29 +506,25 @@ export class EntryService {
   }
 
   /**
-   * Mechanical strike selection. Short strike = OTM put nearest the target delta;
-   * long strike sits `width` below, where width is the risk budget capped by a
-   * percentage of spot and snapped to the chain's strike increment.
+   * Mechanical strike selection from an already-fetched snapshot. Short strike =
+   * OTM put nearest the target delta; long strike sits `width` below, where width
+   * is the risk budget capped by a percentage of spot and snapped to the chain's
+   * strike increment.
    *
-   * This stays mechanical even when the AI selector is on — the model chooses
-   * between spreads, it never builds one.
+   * This stays mechanical even for AI arms — the model chooses BETWEEN spreads,
+   * it never builds one.
    */
-  private async selectSpread(
+  private planFromSnapshot(
     c: ShortlistCandidate,
+    snap: any,
+    params: ArmParams,
     riskBudget: number,
-  ): Promise<UnscoredPlan | null> {
-    // Wide window: the long leg sits well below the short strike, and a narrow
-    // window silently has no long leg to pair with.
-    const snap: any = await this.tastytrade.getGreeksSnapshot(
-      c.symbol,
-      this.targetDte,
-      25,
-      8,
-    );
+    tag: string,
+  ): UnscoredPlan | null {
     const spot = Number(snap?.underlyingPrice);
     const contracts: any[] = snap?.contracts ?? [];
     if (!spot || contracts.length < 2) {
-      this.logger.warn(`entry: ${c.symbol} — no usable chain snapshot`);
+      this.logger.warn(`${tag}: ${c.symbol} — no usable chain snapshot`);
       return null;
     }
 
@@ -450,15 +548,15 @@ export class EntryService {
 
     if (puts.length < 2) {
       this.logger.warn(
-        `entry: ${c.symbol} — only ${puts.length} quotable OTM puts, skipping`,
+        `${tag}: ${c.symbol} — only ${puts.length} quotable OTM puts, skipping`,
       );
       return null;
     }
 
     // Short strike: closest |delta| to target.
     const short = puts.reduce((best, p) =>
-      Math.abs(Math.abs(p.delta) - this.targetDelta) <
-      Math.abs(Math.abs(best.delta) - this.targetDelta)
+      Math.abs(Math.abs(p.delta) - params.targetDelta) <
+      Math.abs(Math.abs(best.delta) - params.targetDelta)
         ? p
         : best,
     );
@@ -466,7 +564,7 @@ export class EntryService {
     // Width: risk-budgeted and capped by % of spot. Don't demand an exact strike
     // — quotes are sparse (thin books, holidays), so take the WIDEST strike that
     // still fits the budget. Wider = more credit for the same risk ceiling.
-    const maxWidth = Math.min(riskBudget / 100, spot * this.widthPct);
+    const maxWidth = Math.min(riskBudget / 100, spot * params.widthPct);
     const long = puts
       .filter((p) => p.strike < short.strike)
       .filter((p) => short.strike - p.strike <= maxWidth)
@@ -474,7 +572,7 @@ export class EntryService {
     if (!long) {
       const nearest = puts.find((p) => p.strike < short.strike);
       this.logger.warn(
-        `entry: ${c.symbol} — no long strike within budget ` +
+        `${tag}: ${c.symbol} — no long strike within budget ` +
           `(short ${short.strike}, maxWidth ${round2(maxWidth)}, ` +
           `nearest below ${nearest ? nearest.strike : 'none'})`,
       );
@@ -489,9 +587,9 @@ export class EntryService {
     ] as const) {
       const mid = (leg.bid + leg.ask) / 2;
       const rel = mid > 0 ? (leg.ask - leg.bid) / mid : Infinity;
-      if (mid <= 0 || rel > this.maxQuoteSpreadPct) {
+      if (mid <= 0 || rel > params.maxQuoteSpreadPct) {
         this.logger.warn(
-          `entry: ${c.symbol} — ${label} leg ${leg.strike}P quote too wide ` +
+          `${tag}: ${c.symbol} — ${label} leg ${leg.strike}P quote too wide ` +
             `(${leg.bid}/${leg.ask}); skipping`,
         );
         return null;
@@ -504,13 +602,13 @@ export class EntryService {
     const creditToWidth = credit / actualWidth;
 
     if (credit <= 0) {
-      this.logger.warn(`entry: ${c.symbol} — non-positive credit, skipping`);
+      this.logger.warn(`${tag}: ${c.symbol} — non-positive credit, skipping`);
       return null;
     }
-    if (creditToWidth < this.minCreditToWidth) {
+    if (creditToWidth < params.minCreditToWidth) {
       this.logger.log(
-        `entry: ${c.symbol} — credit/width ${(creditToWidth * 100).toFixed(0)}% ` +
-          `below ${(this.minCreditToWidth * 100).toFixed(0)}%, poor risk/reward — skipping`,
+        `${tag}: ${c.symbol} — credit/width ${(creditToWidth * 100).toFixed(0)}% ` +
+          `below ${(params.minCreditToWidth * 100).toFixed(0)}%, poor risk/reward — skipping`,
       );
       return null;
     }
@@ -536,6 +634,9 @@ export class EntryService {
   }
 }
 
+function snapKey(symbol: string, dte: number): string {
+  return `${symbol}@${dte}`;
+}
 function etDate(d: Date): string {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/New_York',

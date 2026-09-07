@@ -253,6 +253,11 @@ export class TastytradeService implements OnModuleInit {
         (d: any) => events.push(d),
         channelId,
       );
+      const removeError = streamer.addErrorListener((err: any) =>
+        this.logger.warn(
+          `streamer error (${streamerSymbols.length} symbols): ${err?.message ?? err}`,
+        ),
+      );
       const removeAuth = streamer.addAuthStateChangeListener(
         (isAuthorized: boolean) => {
           if (!isAuthorized) return;
@@ -275,10 +280,26 @@ export class TastytradeService implements OnModuleInit {
       setTimeout(() => {
         removeData();
         removeAuth();
+        removeError();
+        // disconnect() nulls the socket's onerror handler and THEN closes it. If
+        // the socket is still CONNECTING (common when several snapshots run at
+        // once), `ws` emits an EventEmitter 'error' — and an 'error' event with
+        // no listener is a fatal throw in Node, which killed the whole service.
+        // The surrounding try/catch cannot help: the event is asynchronous.
+        // Attaching a listener on the emitter channel absorbs it; disconnect()
+        // only clears the on* properties, so this survives the teardown.
+        const ws = (streamer as unknown as { webSocket?: any }).webSocket;
+        if (ws && typeof ws.on === 'function') {
+          ws.on('error', (err: any) =>
+            this.logger.debug(
+              `streamer socket closed mid-connect: ${err?.message ?? err}`,
+            ),
+          );
+        }
         try {
           streamer.disconnect();
-        } catch {
-          /* ignore */
+        } catch (err) {
+          this.logger.warn(`streamer disconnect failed: ${errText(err)}`);
         }
         resolve({
           streamerUrl: url,
@@ -394,4 +415,9 @@ export class TastytradeService implements OnModuleInit {
       contracts,
     };
   }
+}
+
+/** Error message extraction for log lines. */
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

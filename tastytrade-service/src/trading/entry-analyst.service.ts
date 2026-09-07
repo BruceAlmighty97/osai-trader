@@ -43,6 +43,10 @@ export interface AnalystInput {
   account: PaperAccountSummary;
   open: PositionEntity[];
   riskBudget: number;
+  /** Per-arm model override; falls back to ENTRY_MODEL. */
+  model?: string;
+  /** Log prefix identifying the calling arm. */
+  armTag?: string;
 }
 
 /**
@@ -91,18 +95,20 @@ export class EntryAnalystService {
     if (!this.client) return fallback('no ANTHROPIC_API_KEY');
 
     const started = Date.now();
+    const model = input.model ?? this.model;
+    const tag = input.armTag ?? 'entry-analyst';
     const userMessage = this.buildUserMessage(input);
 
     this.logger.log(
-      `entry-analyst: asking ${this.model} to choose from ${input.slate.length} plans ` +
+      `${tag}: asking ${model} to choose from ${input.slate.length} plans ` +
         `[${input.slate.map((p) => p.symbol).join(', ')}] against ${input.open.length} open position(s)`,
     );
-    this.logger.debug(`entry-analyst: prompt\n${userMessage}`);
+    this.logger.debug(`${tag}: prompt\n${userMessage}`);
 
     let response: Anthropic.Message;
     try {
       response = await this.client.messages.create({
-        model: this.model,
+        model,
         max_tokens: 4096,
         thinking: { type: 'adaptive' },
         output_config: {
@@ -120,7 +126,7 @@ export class EntryAnalystService {
       } as Anthropic.MessageCreateParamsNonStreaming);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`entry-analyst: model call failed — ${msg}`);
+      this.logger.error(`${tag}: model call failed — ${msg}`);
       return fallback(`model call failed: ${msg}`);
     }
 
@@ -141,7 +147,7 @@ export class EntryAnalystService {
       parsed = textBlock ? JSON.parse(textBlock.text) : null;
     } catch (err) {
       this.logger.error(
-        `entry-analyst: unparseable JSON response — ${err instanceof Error ? err.message : err}`,
+        `${tag}: unparseable JSON response — ${err instanceof Error ? err.message : err}`,
       );
     }
     if (!parsed) return fallback('unparseable response');
@@ -153,7 +159,7 @@ export class EntryAnalystService {
       const n = Number(raw);
       if (!Number.isInteger(n) || n < 0 || n >= input.slate.length) {
         this.logger.error(
-          `entry-analyst: pick ${JSON.stringify(raw)} out of range for slate of ` +
+          `${tag}: pick ${JSON.stringify(raw)} out of range for slate of ` +
             `${input.slate.length} — falling back to mechanical`,
         );
         return { ...fallback(`pick out of range: ${JSON.stringify(raw)}`), tokenUsage, durationMs };
@@ -167,7 +173,7 @@ export class EntryAnalystService {
       rationale: clean(parsed.rationale),
       portfolioFit: nonEmpty(parsed.portfolioFit),
       concerns: nonEmpty(parsed.concerns),
-      model: this.model,
+      model,
       tokenUsage,
       durationMs,
     };
@@ -175,16 +181,16 @@ export class EntryAnalystService {
     const what =
       pick === null ? 'PASS (open nothing)' : `${input.slate[pick].symbol} [#${pick}]`;
     this.logger.log(
-      `entry-analyst: chose ${what} in ${durationMs}ms ` +
+      `${tag}: chose ${what} in ${durationMs}ms ` +
         `(in:${tokenUsage.input} out:${tokenUsage.output} ` +
         `cacheRead:${tokenUsage.cacheRead} stop:${response.stop_reason})`,
     );
-    this.logger.log(`entry-analyst: rationale — ${choice.rationale}`);
+    this.logger.log(`${tag}: rationale — ${choice.rationale}`);
     if (choice.portfolioFit) {
-      this.logger.log(`entry-analyst: portfolio fit — ${choice.portfolioFit}`);
+      this.logger.log(`${tag}: portfolio fit — ${choice.portfolioFit}`);
     }
     if (choice.concerns) {
-      this.logger.log(`entry-analyst: concerns — ${choice.concerns}`);
+      this.logger.log(`${tag}: concerns — ${choice.concerns}`);
     }
 
     return choice;

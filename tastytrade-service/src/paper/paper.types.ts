@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ExitReason, StrategyType } from '../persistence/persistence.types';
 import { RiskRules } from '../risk/risk.types';
+import { ArmConfig } from './paper-account.entity';
 
 /**
  * Paper trading = an imaginary account tracked entirely in OUR database. Real
@@ -58,6 +59,12 @@ export class OpenFromSuggestionDto {
 
   @ApiPropertyOptional({ description: 'Link to a strategy_decisions row.' })
   decisionId?: number;
+
+  @ApiPropertyOptional({
+    description: 'Experiment arm to open in. Defaults to the baseline arm.',
+    example: 'mech',
+  })
+  account?: string;
 }
 
 /** Close an open imaginary position and realize the P&L. */
@@ -74,7 +81,14 @@ export class ClosePositionDto {
 }
 
 export interface PaperAccountSummary {
+  /** Arm key, e.g. 'mech' or 'ai'. */
   name: string;
+  accountId: number;
+  /** What this arm is testing. */
+  description: string | null;
+  enabled: boolean;
+  /** Arm overrides on top of the ENTRY_* env defaults. */
+  config: ArmConfig;
   startingBalance: number;
   /** Active risk rules (from the shared risk_config, shown for convenience). */
   rules: RiskRules;

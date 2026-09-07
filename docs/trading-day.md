@@ -111,7 +111,7 @@ Survivors get a **deterministic 0-100 score** on hard economics only:
 Sentiment is deliberately **not** weighted here — it's noisy retail chatter and a
 coefficient for it would be false precision. It's handed to the AI instead.
 
-**Stage 2 — choose one (`ENTRY_SELECTOR`).**
+**Stage 2 — choose one (per-arm `selector`).**
 - `mechanical` (default) — take the top score.
 - `ai` — Claude gets the same slate plus the open book, and picks one index or
   passes. It **cannot** name a symbol, invent a strike, move an expiration, or
@@ -120,8 +120,44 @@ coefficient for it would be false precision. It's handed to the AI instead.
   candidate duplicates exposure already on the book (the correlation tag catches
   SPY+QQQ, not NVDA+SMH).
 
-The **mechanical baseline is logged on every run either way**, and divergences are
-logged explicitly, so the AI's lift is measurable rather than assumed.
+The **mechanical baseline is logged for every arm on every run**, and divergences
+are logged explicitly, so an arm's lift over plain top-score is measurable rather
+than assumed.
+
+## A/B arms
+
+Changes get tested against a live baseline instead of argued about. An **arm** is a
+paper account plus a `config` blob of overrides on the `ENTRY_*` defaults —
+`selector`, `model`, `targetDelta`, `targetDte`, `widthPct`, `minCreditToWidth`,
+`maxQuoteSpreadPct`, `slateSize`, `maxNewPerRun`. Two ship seeded:
+
+| Arm | Config | Testing |
+|---|---|---|
+| `mech` | `{"selector":"mechanical"}` | Baseline — highest deterministic score |
+| `ai` | `{"selector":"ai"}` | Claude picks from the same scored slate |
+
+Each arm keeps its **own book**, starting from the same $2,500. That's the point:
+once the arms pick differently their holdings diverge, and a portfolio-level effect
+— "it declined to double up on semis" — is invisible if they share a book. Two arms
+can hold the same symbol without blocking each other, because the risk gate runs
+per arm.
+
+Every arm's candidates are unioned and **each chain is fetched exactly once**, so
+arms score off identical prices — a price that moved between two fetches can never
+explain a difference in outcome. Two arms cost the same ~9s as one.
+
+Risk rules stay **global** (`risk_config`), not per arm: they apply to the real
+account too, so they aren't an experiment variable.
+
+- `GET /paper/accounts` — the scoreboard, every arm side by side
+- `GET /paper/account?account=ai`, `GET /paper/positions?account=ai|all`
+- Arms are rows: add one with an INSERT, disable one with `enabled=false`
+
+**On reading the results:** at 4 concurrent positions and 45 DTE each arm closes
+only a handful of trades a month, and credit-spread P&L is dominated by the
+occasional big loser. P&L divergence over a few weeks is mostly noise — treat the
+**decision log** (where and why the arms diverged) as the near-term signal, and
+P&L as a many-months question.
 
 Then, unchanged: `RiskService.check()` gates whatever came back, and **if the gate
 rejects the pick, entry falls through to the next-best plan by score** rather than

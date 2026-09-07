@@ -23,7 +23,8 @@ import {
 } from './paper.types';
 import { RiskService } from '../risk/risk.service';
 
-const DEFAULT_ACCOUNT = 'default';
+/** The baseline arm — what unqualified calls resolve to. */
+const DEFAULT_ACCOUNT = 'mech';
 const MULTIPLIER = 100; // options are per-100-shares
 
 @Injectable()
@@ -40,30 +41,44 @@ export class PaperService {
     this.logger.log(`TRADING_MODE=${TRADING_MODE} (paper=${IS_PAPER})`);
   }
 
-  /** Lazily create the single default account so there's nothing to seed. */
-  async getOrCreateAccount(): Promise<PaperAccountEntity> {
-    let acct = await this.accounts.findOne({ where: { name: DEFAULT_ACCOUNT } });
+  /** Lazily create the baseline arm so a fresh DB has something to trade in. */
+  async getOrCreateAccount(name = DEFAULT_ACCOUNT): Promise<PaperAccountEntity> {
+    let acct = await this.accounts.findOne({ where: { name } });
     if (!acct) {
+      if (name !== DEFAULT_ACCOUNT) {
+        throw new NotFoundException(`no experiment arm named "${name}"`);
+      }
       acct = await this.accounts.save(
-        this.accounts.create({ name: DEFAULT_ACCOUNT }),
+        this.accounts.create({
+          name: DEFAULT_ACCOUNT,
+          description: 'Baseline: highest deterministic score.',
+          config: { selector: 'mechanical' },
+        }),
       );
       this.logger.log(
-        `Created paper account "${DEFAULT_ACCOUNT}" starting at $${acct.startingBalance}`,
+        `Created paper arm "${DEFAULT_ACCOUNT}" starting at $${acct.startingBalance}`,
       );
     }
     return acct;
   }
 
+  /** Every arm, newest config first — the A/B roster. */
+  async listArms(enabledOnly = false): Promise<PaperAccountEntity[]> {
+    const arms = await this.accounts.find({ order: { id: 'ASC' } });
+    if (!arms.length) return [await this.getOrCreateAccount()];
+    return enabledOnly ? arms.filter((a) => a.enabled) : arms;
+  }
+
   /** Everything but startingBalance is derived from the positions table. */
-  async getSummary(): Promise<PaperAccountSummary> {
-    const acct = await this.getOrCreateAccount();
+  async getSummary(accountName?: string): Promise<PaperAccountSummary> {
+    const acct = await this.getOrCreateAccount(accountName ?? DEFAULT_ACCOUNT);
     const starting = num(acct.startingBalance);
 
     const open = await this.positions.find({
-      where: { status: PositionStatus.OPEN },
+      where: { status: PositionStatus.OPEN, accountId: acct.id },
     });
     const closed = await this.positions.find({
-      where: { status: PositionStatus.CLOSED },
+      where: { status: PositionStatus.CLOSED, accountId: acct.id },
     });
 
     const buyingPowerUsed = open.reduce(
@@ -87,6 +102,10 @@ export class PaperService {
 
     return {
       name: acct.name,
+      accountId: acct.id,
+      description: acct.description,
+      enabled: acct.enabled,
+      config: acct.config ?? {},
       startingBalance: round2(starting),
       rules: await this.risk.getRules(),
       realizedPnl: round2(realizedPnl),
@@ -122,10 +141,12 @@ export class PaperService {
     const riskPerUnit = maxRiskPerShare * MULTIPLIER;
     const positionRisk = riskPerUnit * contracts;
 
-    // Deterministic risk gate (shared with the future live account).
-    const summary = await this.getSummary();
+    // Arm-scoped: the gate sees only THIS arm's book, so arms can hold the same
+    // symbol without blocking each other.
+    const acct = await this.getOrCreateAccount(dto.account ?? DEFAULT_ACCOUNT);
+    const summary = await this.getSummary(acct.name);
     const open = await this.positions.find({
-      where: { status: PositionStatus.OPEN },
+      where: { status: PositionStatus.OPEN, accountId: acct.id },
     });
     const gate = await this.risk.check({
       accountValue: summary.settledValue,
@@ -157,13 +178,15 @@ export class PaperService {
       entryCredit: credit,
       maxRisk: riskPerUnit, // $ per spread unit (matches getSummary/bpUsed)
       status: PositionStatus.OPEN,
+      accountId: acct.id,
       openDecisionId: dto.decisionId ?? null,
       notes: dto.notes ?? null,
       openedAt: new Date(),
     });
     const saved = await this.positions.save(position);
     this.logger.log(
-      `Opened paper ${dto.strategy} on ${saved.symbol} x${contracts} @ ${credit} credit (id=${saved.id})`,
+      `Opened paper ${dto.strategy} on ${saved.symbol} x${contracts} @ ${credit} credit ` +
+        `(id=${saved.id}, arm=${acct.name})`,
     );
     return saved;
   }
@@ -198,11 +221,18 @@ export class PaperService {
     return saved;
   }
 
-  async listPositions(status?: PositionStatus): Promise<PositionEntity[]> {
-    return this.positions.find({
-      where: status ? { status } : {},
-      order: { openedAt: 'DESC' },
-    });
+  /** Positions for one arm. Pass accountName=null to list across all arms. */
+  async listPositions(
+    status?: PositionStatus,
+    accountName?: string | null,
+  ): Promise<PositionEntity[]> {
+    const where: Record<string, unknown> = {};
+    if (status) where.status = status;
+    if (accountName !== null) {
+      const acct = await this.getOrCreateAccount(accountName ?? DEFAULT_ACCOUNT);
+      where.accountId = acct.id;
+    }
+    return this.positions.find({ where, order: { openedAt: 'DESC' } });
   }
 }
 

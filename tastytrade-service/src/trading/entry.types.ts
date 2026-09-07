@@ -4,6 +4,22 @@
  * import them without a circular dependency.
  */
 
+/**
+ * Fully-resolved knobs for one experiment arm: the ENTRY_* env defaults with the
+ * arm's `config` overrides applied on top.
+ */
+export interface ArmParams {
+  selector: 'mechanical' | 'ai';
+  model?: string;
+  targetDelta: number;
+  widthPct: number;
+  minCreditToWidth: number;
+  targetDte: number;
+  maxNewPerRun: number;
+  maxQuoteSpreadPct: number;
+  slateSize: number;
+}
+
 /** Weighted components of a plan's deterministic score, each normalized 0-1. */
 export interface ScoreParts {
   /** Risk/reward: credit as a fraction of width. */

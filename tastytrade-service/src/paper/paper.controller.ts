@@ -27,10 +27,24 @@ import { PositionStatus } from '../persistence/persistence.types';
 export class PaperController {
   constructor(private readonly paper: PaperService) {}
 
+  @Get('accounts')
+  @ApiOperation({
+    summary: 'A/B scoreboard — every experiment arm side by side',
+  })
+  async accounts(): Promise<PaperAccountSummary[]> {
+    const arms = await this.paper.listArms();
+    return Promise.all(arms.map((a) => this.paper.getSummary(a.name)));
+  }
+
   @Get('account')
-  @ApiOperation({ summary: 'Imaginary account summary (balance, P&L, W/L)' })
-  account(): Promise<PaperAccountSummary> {
-    return this.paper.getSummary();
+  @ApiOperation({ summary: 'One arm: balance, P&L, W/L' })
+  @ApiQuery({
+    name: 'account',
+    required: false,
+    description: "Arm key, e.g. 'mech' or 'ai'. Defaults to the baseline arm.",
+  })
+  account(@Query('account') account?: string): Promise<PaperAccountSummary> {
+    return this.paper.getSummary(account);
   }
 
   @Post('positions/from-suggestion')
@@ -44,8 +58,16 @@ export class PaperController {
   @Get('positions')
   @ApiOperation({ summary: 'List imaginary positions' })
   @ApiQuery({ name: 'status', required: false, enum: PositionStatus })
-  positions(@Query('status') status?: PositionStatus): Promise<PositionEntity[]> {
-    return this.paper.listPositions(status);
+  @ApiQuery({
+    name: 'account',
+    required: false,
+    description: "Arm key. Omit for the baseline arm; 'all' for every arm.",
+  })
+  positions(
+    @Query('status') status?: PositionStatus,
+    @Query('account') account?: string,
+  ): Promise<PositionEntity[]> {
+    return this.paper.listPositions(status, account === 'all' ? null : account);
   }
 
   @Patch('positions/:id/close')

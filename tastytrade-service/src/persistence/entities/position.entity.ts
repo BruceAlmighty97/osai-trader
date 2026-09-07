@@ -64,6 +64,14 @@ export class PositionEntity {
   @Column({ type: 'varchar', nullable: true })
   exitReason: ExitReason | null;
 
+  /**
+   * Which experiment arm owns this position. Nullable so the generic /positions
+   * CRUD surface still works without one.
+   */
+  @Index()
+  @Column({ type: 'integer', nullable: true })
+  accountId: number | null;
+
   /** Soft links (no FK constraint) to the audit/execution rows. */
   @Column({ type: 'integer', nullable: true })
   openDecisionId: number | null;
