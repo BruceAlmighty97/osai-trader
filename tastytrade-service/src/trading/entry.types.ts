@@ -45,6 +45,9 @@ export interface SpreadPlan {
   underlyingPrice: number;
   shortStrike: number;
   longStrike: number;
+  /** DXLink symbols, persisted on the legs so mark-to-market can re-quote them. */
+  shortStreamerSymbol?: string;
+  longStreamerSymbol?: string;
   shortDelta: number;
   width: number;
   /** Net credit per share (short mid − long mid). */

@@ -1,8 +1,10 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { PaperAccountEntity } from './paper-account.entity';
+import { TastytradeModule } from '../tastytrade/tastytrade.module';
 import { PositionEntity } from '../persistence/entities/position.entity';
 import { PaperService } from './paper.service';
+import { MarkToMarketService } from './mark-to-market.service';
 import { PaperController } from './paper.controller';
 import { RiskModule } from '../risk/risk.module';
 
@@ -10,10 +12,11 @@ import { RiskModule } from '../risk/risk.module';
 @Module({
   imports: [
     TypeOrmModule.forFeature([PaperAccountEntity, PositionEntity]),
+    TastytradeModule,
     RiskModule,
   ],
   controllers: [PaperController],
-  providers: [PaperService],
-  exports: [PaperService],
+  providers: [PaperService, MarkToMarketService],
+  exports: [PaperService, MarkToMarketService],
 })
 export class PaperModule {}

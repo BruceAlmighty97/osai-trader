@@ -23,6 +23,13 @@ class SuggestionLegInput {
   right: 'P' | 'C';
   @ApiProperty({ example: 440 })
   strike: number;
+
+  @ApiPropertyOptional({
+    description:
+      'DXLink streamer symbol, so mark-to-market can re-quote this leg without refetching the chain.',
+    example: '.SPY261017P440',
+  })
+  streamerSymbol?: string;
 }
 
 /** Accept a /strategy/suggest play into the imaginary ledger. */
@@ -103,4 +110,48 @@ export interface PaperAccountSummary {
   losses: number;
   scratches: number;
   winRate: number | null;
+}
+
+/** One open position valued at current market. */
+export interface PositionValuation {
+  positionId: number;
+  /** Experiment arm that owns it. */
+  arm: string;
+  symbol: string;
+  strategy: string;
+  expiration: string;
+  /** Calendar days to expiration — drives the 21-DTE management rule. */
+  dte: number | null;
+  quantity: number;
+  entryCredit: number;
+  /** Per-share cost to close now. Null when a leg could not be quoted. */
+  currentDebit: number | null;
+  unrealizedPnl: number | null;
+  /**
+   * (entryCredit - currentDebit) / entryCredit. This is the number the
+   * 50%-profit target fires on; 1.0 means the spread is worthless and the full
+   * credit is kept.
+   */
+  pctOfMaxProfit: number | null;
+  maxRisk: number | null;
+}
+
+/** An arm's live value: settled cash plus what the open book is worth. */
+export interface ArmValuation {
+  name: string;
+  /** startingBalance + realized P&L (closed trades only). */
+  settledValue: number;
+  openUnrealized: number;
+  /** settledValue + openUnrealized — what the account is actually worth now. */
+  netLiq: number;
+  openPositions: number;
+  /** How many of those could actually be quoted. */
+  pricedPositions: number;
+  positions: PositionValuation[];
+}
+
+export interface MarkToMarketResult {
+  asOf: string;
+  durationMs: number;
+  arms: ArmValuation[];
 }

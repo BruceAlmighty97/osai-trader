@@ -392,6 +392,9 @@ export class TastytradeService implements OnModuleInit {
         strike: parseFloat(s['strike-price']),
         put: {
           symbol: s.put,
+          // DXLink symbol — persist this on an opened leg so mark-to-market can
+          // re-quote it directly instead of re-fetching the whole chain.
+          streamerSymbol: s['put-streamer-symbol'],
           delta: round(p.delta),
           iv: round(p.iv),
           bid: p.bid,
@@ -399,6 +402,7 @@ export class TastytradeService implements OnModuleInit {
         },
         call: {
           symbol: s.call,
+          streamerSymbol: s['call-streamer-symbol'],
           delta: round(c.delta),
           iv: round(c.iv),
           bid: c.bid,

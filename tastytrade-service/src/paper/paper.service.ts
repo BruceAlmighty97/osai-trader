@@ -167,6 +167,8 @@ export class PaperService {
       right: l.right,
       strike: l.strike,
       quantity: 1,
+      // Persisted so mark-to-market can re-quote the exact contract later.
+      ...(l.streamerSymbol ? { streamerSymbol: l.streamerSymbol } : {}),
     }));
 
     const position = this.positions.create({

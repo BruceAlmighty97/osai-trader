@@ -10,8 +10,10 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { PaperService } from './paper.service';
+import { MarkToMarketService } from './mark-to-market.service';
 import {
   ClosePositionDto,
+  MarkToMarketResult,
   OpenFromSuggestionDto,
   PaperAccountSummary,
 } from './paper.types';
@@ -25,7 +27,27 @@ import { PositionStatus } from '../persistence/persistence.types';
 @ApiTags('paper trading')
 @Controller('paper')
 export class PaperController {
-  constructor(private readonly paper: PaperService) {}
+  constructor(
+    private readonly paper: PaperService,
+    private readonly mtm: MarkToMarketService,
+  ) {}
+
+  @Get('mark')
+  @ApiOperation({
+    summary:
+      'Mark-to-market: re-quote every open leg and report unrealized P&L + netLiq',
+    description:
+      'Slow (~8s) — it opens a live quote session. /paper/account(s) stay DB-only ' +
+      'and report SETTLED value, so they will not move until a position closes.',
+  })
+  @ApiQuery({
+    name: 'account',
+    required: false,
+    description: 'Arm key. Omit to value every arm.',
+  })
+  mark(@Query('account') account?: string): Promise<MarkToMarketResult> {
+    return this.mtm.valueAll(account ?? null);
+  }
 
   @Get('accounts')
   @ApiOperation({

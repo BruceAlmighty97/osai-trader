@@ -318,8 +318,18 @@ export class EntryService {
           strategy: StrategyType.BULL_PUT_SPREAD,
           expiration: plan.expiration,
           legs: [
-            { action: 'Sell to Open', right: 'P', strike: plan.shortStrike },
-            { action: 'Buy to Open', right: 'P', strike: plan.longStrike },
+            {
+              action: 'Sell to Open',
+              right: 'P',
+              strike: plan.shortStrike,
+              streamerSymbol: plan.shortStreamerSymbol,
+            },
+            {
+              action: 'Buy to Open',
+              right: 'P',
+              strike: plan.longStrike,
+              streamerSymbol: plan.longStreamerSymbol,
+            },
           ],
           creditPerSpread: round2(plan.credit),
           maxRiskPerSpread: round2(plan.riskPerShare),
@@ -533,6 +543,7 @@ export class EntryService {
       .filter((x) => x?.put && x.strike < spot)
       .map((x) => ({
         strike: Number(x.strike),
+        streamerSymbol: x.put.streamerSymbol as string | undefined,
         delta: Number(x.put.delta),
         bid: Number(x.put.bid),
         ask: Number(x.put.ask),
@@ -621,6 +632,8 @@ export class EntryService {
       underlyingPrice: spot,
       shortStrike: short.strike,
       longStrike: long.strike,
+      shortStreamerSymbol: short.streamerSymbol,
+      longStreamerSymbol: long.streamerSymbol,
       shortDelta: short.delta,
       width: actualWidth,
       credit,

@@ -165,6 +165,36 @@ wasting the tick. Every run writes a `decisions` row — the full slate, the cho
 the reasoning, the model and token usage — and the opened position links to it via
 `openDecisionId`.
 
+## Mark-to-market
+
+`GET /paper/accounts` is **settled value only** — `startingBalance + realized P&L`
+— so it deliberately will not move while positions are open. It is a fast DB-only
+read. `GET /paper/mark` is the live counterpart (~8s, opens a quote session):
+
+```
+currentDebit  = shortLegMid - longLegMid              (per share, cost to close)
+unrealized    = (entryCredit - currentDebit) x 100 x qty - commissions
+netLiq        = settledValue + openUnrealized
+```
+
+Legs are priced at the **mid**, matching how entry priced them. Quoting the
+bid/ask you would really pay to close would bake in a systematic loss that is an
+artifact of the measurement, not the strategy — every position would look
+underwater the instant it opened.
+
+Each open leg persists its **DXLink `streamerSymbol`** at entry, so valuation is
+**one** batched quote session covering every leg of every position in every arm —
+not one chain fetch per position. Duplicate contracts (both arms holding the same
+spread) are quoted once. Positions opened before this existed have no leg symbol;
+they are reported with `unrealizedPnl: null` and excluded from `netLiq` rather
+than silently valued at zero.
+
+`pctOfMaxProfit` = `(entryCredit - currentDebit) / entryCredit` is the number the
+**50%-profit rule** fires on, and `dte` drives the **21-DTE** rule — which is why
+this had to land before the exit engine. Note it does NOT change buying power:
+`maxRisk` is locked up for the life of a defined-risk spread regardless of what
+the position is currently worth.
+
 ## Rules baked into the schedule
 
 - **Never open in the first 30 min or the last hour** (fills + gamma) — the
