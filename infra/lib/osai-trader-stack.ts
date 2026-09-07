@@ -167,6 +167,12 @@ export class OsaiTraderStack extends cdk.Stack {
           appSecrets,
           'ANTHROPIC_API_KEY',
         ),
+        // Earnings calendar (pre-market hard exclusion). Must exist in the
+        // secret BEFORE deploying this, or the task fails to start.
+        FINNHUB_API_KEY: ecs.Secret.fromSecretsManager(
+          appSecrets,
+          'FINNHUB_API_KEY',
+        ),
         // Whole-secret value (no JSON field) = the generated key.
         API_KEY: ecs.Secret.fromSecretsManager(apiKeySecret),
       },
