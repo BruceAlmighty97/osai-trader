@@ -6,16 +6,24 @@ ETFs, managed at 50% profit / 21 DTE.** Because these are swing positions (not
 0DTE), intraday timing matters for **fill quality and entry edge**, not because
 anything expires today — so the cadence is lean.
 
-## Control model (unchanged)
+## Control model
 
-**Deterministic orchestrator, bounded AI.** Code owns the schedule, the risk gate,
-execution, and the hard exit rules. The AI is called only for judgment:
+**Deterministic orchestrator, mechanical first.** Code owns the schedule, the risk
+gate, execution, and the exit rules. We're deliberately starting **fully
+mechanical** — rule-based strike selection, no LLM in the loop — to get the whole
+loop working cheaply and testably, and to establish a **baseline the AI has to
+beat**.
+
+**Bounded AI is a later, measurable layer**, not a rewrite — it slots into defined
+seams:
 - **Entry** — a read-only tool-using analyst decides *what/if/when* to open across
-  the watchlist (it can pass), then the deterministic `RiskService.check()` gates
-  it and code records it. The AI has no open/close tool.
+  the watchlist (it can pass); `RiskService.check()` still gates it and code still
+  records it. The AI never gets an open/close tool.
 - **Exit judgment** — at decision points only (50% profit, ~21 DTE) the AI weighs
   close/hold/roll from a code-sanctioned set. Hard stops (2× credit, assignment)
   are non-negotiable code closes.
+
+Deterministic-first preserves the agentic option; the reverse doesn't.
 
 ## The day — phases + cadence (all times ET, DST-aware)
 
@@ -29,8 +37,10 @@ execution, and the hard exit rules. The AI is called only for judgment:
 | **Power-hour manage** | 15:00–15:45 | **every 15 min** (~4) | Harvest winners (remove gamma). **No new opens.** Respect 15:45 cutoff | exits |
 | **After-close review** | 16:15 | once | Journal each decision (plan vs outcome), day P&L / W-L, note tomorrow | summary |
 
-Start with the 5 core phases (prep, morning entry, midday manage, power-hour
-manage, review); add the optional afternoon entry once proven.
+The **5 core phases are implemented** in `PHASE_SCHEDULE` (prep, morning entry,
+midday manage, power-hour manage, review) — dispatching correctly, with handlers
+still stubbed. The **afternoon entry is deliberately omitted** until the core loop
+is proven; adding it back is one row in the schedule.
 
 ## Rules baked into the schedule
 
@@ -57,17 +67,27 @@ The service is always-on (it serves the API), so it schedules **itself** — no
 EventBridge, no RunTask, no HTTP ingress, no ALB:
 
 ```ts
-@Cron('0/15 8-16 * * 1-5', { timeZone: 'America/New_York' }) // every 15 min, mkt hrs, weekdays
-async tick() { await this.dispatcher.run(); }
+// orchestrator.service.ts — a deliberately dumb, frequent tick
+@Cron('0 */15 * * * *', { name: 'osai-tick' })
+tick(): void { this.runEventLoop(); }
 ```
 
-The **dispatcher** (runs each tick in the warm process — DB connected, tastytrade
-session live):
-1. **NYSE-calendar gate** — skip holidays; handle half-days (early close).
-2. Read the **phase-schedule config from the DB** (editable at runtime, like the
-   risk rules — no redeploy to change times/cadence).
-3. Run whatever phase(s) are active at this ET tick; a tick outside every window
-   no-ops.
+All the intelligence lives in the **dispatcher** (`runEventLoop()`), which runs each
+tick in the warm process (DB connected, tastytrade session live) and:
+1. **NYSE-calendar gate** — `MarketCalendarService.isTradingDay()`; weekends and
+   holidays no-op. `isEarlyClose()` shifts the late phases 3h earlier on half-days.
+2. **Phase lookup** — maps the ET wall clock to a phase via `PHASE_SCHEDULE`.
+3. **Dispatch** — runs that phase; ticks outside every window no-op (debug log).
+
+Keeping the market-hours logic in the **dispatcher rather than the cron expression**
+is what lets **pre-market (08:00) and after-close (16:15) run at all** — both sit
+outside regular market hours, so a market-hours cron would silently skip them.
+
+> **Where the config lives:** phase windows are in code today
+> (`orchestrator.types.ts` → `PHASE_SCHEDULE`), so changing a time needs a deploy.
+> A single-point window (`startMin === endMin`) fires once; a range fires on every
+> 15-min tick inside it. Moving this to DB-backed config with a GET/PATCH endpoint
+> (like `/risk/config`) is deferred until the phases settle.
 
 **Why not EventBridge → RunTask:** that only wins if we scale the service to 0 to
 save ~$7/mo, but each tick would pay a ~30–60s cold boot *and* re-login to
@@ -75,15 +95,28 @@ tastytrade. If we ever go fully serverless, the **dispatcher code is identical**
 only the trigger swaps — so this choice isn't a dead end. See
 `docs/aws-infrastructure.md`.
 
-## Build order
+## Build order & status
 
-1. Mark-to-market (re-quote open legs → live unrealized P&L) — unblocks manage.
-2. Exit engine (deterministic classifier + bounded AI exit judgment).
-3. Entry analyst (read-only tool-using agent) + `RiskService` gate → paper ledger.
-4. Phase dispatcher + `@nestjs/schedule` tick + DB phase-schedule config + NYSE
-   calendar gate + `trading_day` context record (carries state across phases).
-5. Earnings-calendar source for pre-market (tastytrade metrics where present, else
-   a lightweight feed).
+**Done**
+1. ✅ 15-min heartbeat (`@nestjs/schedule`) + `runEventLoop()` entry point.
+2. ✅ Computed NYSE `MarketCalendarService` (trading days + 1pm early closes),
+   verified against the official 2025–2027 calendar.
+3. ✅ Phase dispatcher — calendar gate + ET-time→phase mapping + early-close shift.
+   **Phase handlers are stubs** that just log.
+
+**Next**
+4. **Mark-to-market** — re-quote open legs → live unrealized P&L. Unblocks MANAGE.
+5. **Mechanical entry** — deterministic discover → qualify → strike selection →
+   risk gate → paper ledger. A complete working loop with no AI.
+6. **Earnings calendar** (Finnhub) — the gate that safely opens the single-name lane.
+7. **Exit engine** — deterministic classifier (50% profit / 21 DTE / 2× stop).
+8. **`trading_day` context record** — carries the pre-market shortlist across phases
+   (each phase is a separate tick, so shared state goes through the DB).
+
+**Later**
+9. Swap the mechanical picker for the **bounded AI analyst**; measure the lift
+   against the mechanical baseline.
+10. DB-backed phase schedule; the optional afternoon-entry window.
 
 ## Sources
 
