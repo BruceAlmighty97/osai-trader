@@ -1,11 +1,4 @@
-/** What kind of work a tick should do. See docs/trading-day.md. */
-export enum TradingPhase {
-  PRE_MARKET = 'pre_market',
-  ENTRY = 'entry',
-  MANAGE = 'manage',
-  AFTER_CLOSE = 'after_close',
-  NONE = 'none',
-}
+import { TradingPhase } from '../trading/trading.types';
 
 export interface PhaseWindow {
   phase: TradingPhase;

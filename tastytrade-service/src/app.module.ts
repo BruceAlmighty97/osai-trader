@@ -11,6 +11,7 @@ import { HealthModule } from './health/health.module';
 import { PaperModule } from './paper/paper.module';
 import { RiskModule } from './risk/risk.module';
 import { OrchestratorModule } from './orchestrator/orchestrator.module';
+import { TradingModule } from './trading/trading.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { OrchestratorModule } from './orchestrator/orchestrator.module';
     AuthModule,
     HealthModule,
     OrchestratorModule,
+    TradingModule,
     RiskModule,
     PaperModule,
     TastytradeModule,

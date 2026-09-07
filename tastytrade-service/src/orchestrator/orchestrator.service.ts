@@ -1,11 +1,9 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { EtParts, MarketCalendarService } from './market-calendar.service';
-import {
-  EARLY_CLOSE_SHIFT_MIN,
-  PHASE_SCHEDULE,
-  TradingPhase,
-} from './orchestrator.types';
+import { EARLY_CLOSE_SHIFT_MIN, PHASE_SCHEDULE } from './orchestrator.types';
+import { TraderService } from '../trading/trader.service';
+import { TradingPhase } from '../trading/trading.types';
 
 /**
  * The heartbeat of the trading day. Ticks every 15 minutes; each tick asks two
@@ -18,7 +16,10 @@ import {
 export class OrchestratorService implements OnModuleInit {
   private readonly logger = new Logger(OrchestratorService.name);
 
-  constructor(private readonly calendar: MarketCalendarService) {}
+  constructor(
+    private readonly calendar: MarketCalendarService,
+    private readonly trader: TraderService,
+  ) {}
 
   onModuleInit(): void {
     this.logger.log('Orchestrator scheduler armed — event-loop tick registered.');
@@ -26,12 +27,12 @@ export class OrchestratorService implements OnModuleInit {
 
   /** Every 15 minutes (:00, :15, :30, :45). */
   @Cron('0 */15 * * * *', { name: 'osai-tick' })
-  tick(): void {
-    this.runEventLoop();
+  async tick(): Promise<void> {
+    await this.runEventLoop();
   }
 
   /** Entry point for one pass of the trading orchestration. */
-  runEventLoop(now: Date = new Date()): void {
+  async runEventLoop(now: Date = new Date()): Promise<void> {
     const parts = this.calendar.etParts(now);
     const clock = `${pad(parts.hour)}:${pad(parts.minute)} ET`;
 
@@ -52,7 +53,19 @@ export class OrchestratorService implements OnModuleInit {
     this.logger.log(
       `Run the OSAI trader event loop — ${match.label} @ ${clock}${suffix}`,
     );
-    this.dispatch(match.phase);
+
+    // A failing phase must never kill the heartbeat — the next tick still runs.
+    try {
+      const result = await this.trader.runPhase(match.phase, {
+        now,
+        trigger: 'tick',
+        clock,
+      });
+      this.logger.log(`  → ${result.summary}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`  → ${match.label} failed: ${msg}`);
+    }
   }
 
   /** Map an ET wall-clock time to its trading phase (early close shifts late phases). */
@@ -71,25 +84,6 @@ export class OrchestratorService implements OnModuleInit {
     return { phase: TradingPhase.NONE, label: 'none' };
   }
 
-  /** Phase handlers — stubs for now; each gets its real implementation next. */
-  private dispatch(phase: TradingPhase): void {
-    switch (phase) {
-      case TradingPhase.PRE_MARKET:
-        this.logger.log('  → pre-market: build candidates (stub)');
-        break;
-      case TradingPhase.ENTRY:
-        this.logger.log('  → entry: discover/qualify/propose (stub)');
-        break;
-      case TradingPhase.MANAGE:
-        this.logger.log('  → manage: mark-to-market + exit rules (stub)');
-        break;
-      case TradingPhase.AFTER_CLOSE:
-        this.logger.log('  → after-close: review + log the day (stub)');
-        break;
-      default:
-        break;
-    }
-  }
 }
 
 function pad(n: number): string {
