@@ -11,6 +11,7 @@ import { WatchlistEntity } from '../persistence/entities/watchlist.entity';
 import { TastytradeModule } from '../tastytrade/tastytrade.module';
 import { FinnhubModule } from '../finnhub/finnhub.module';
 import { SocialModule } from '../social/social.module';
+import { PaperModule } from '../paper/paper.module';
 
 /**
  * The "meat" — what actually happens in each trading-day phase. The orchestrator
@@ -22,6 +23,7 @@ import { SocialModule } from '../social/social.module';
     TastytradeModule,
     FinnhubModule,
     SocialModule,
+    PaperModule,
   ],
   controllers: [TradingController],
   providers: [
