@@ -14,6 +14,6 @@ import { StockTwitsClient } from './stocktwits.client';
   imports: [TypeOrmModule.forFeature([SocialMentionEntity])],
   controllers: [SocialController],
   providers: [SocialService, StockTwitsClient],
-  exports: [SocialService],
+  exports: [SocialService, StockTwitsClient],
 })
 export class SocialModule {}
