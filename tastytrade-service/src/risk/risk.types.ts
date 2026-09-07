@@ -15,6 +15,12 @@ export interface RiskRules {
   maxPortfolioRiskPct: number;
   /** Max open positions in the same underlying (absolute). */
   maxPerUnderlying: number;
+  /**
+   * Max open positions sharing a watchlist correlationGroup. maxPerUnderlying
+   * alone won't stop SPY + QQQ + IWM — three positions that are one bet. At
+   * concentrated sizing this is the cap that actually protects the account.
+   */
+  maxPerCorrelationGroup: number;
   /** When true, all new opens are blocked. */
   killSwitch: boolean;
 }
@@ -34,6 +40,7 @@ export const DEFAULT_RULES: RiskRules = {
   maxRiskPerTradePct: 25,
   maxPortfolioRiskPct: 100,
   maxPerUnderlying: 1,
+  maxPerCorrelationGroup: 1,
   killSwitch: false,
 };
 
@@ -47,6 +54,8 @@ export class UpdateRulesDto {
   maxPortfolioRiskPct?: number;
   @ApiPropertyOptional({ example: 1 })
   maxPerUnderlying?: number;
+  @ApiPropertyOptional({ example: 1, description: 'per watchlist correlationGroup' })
+  maxPerCorrelationGroup?: number;
   @ApiPropertyOptional({ example: false })
   killSwitch?: boolean;
 }

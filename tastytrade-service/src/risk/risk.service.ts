@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { RiskConfigEntity } from './risk-config.entity';
+import { WatchlistEntity } from '../persistence/entities/watchlist.entity';
 import {
   DEFAULT_RULES,
   RiskCheckContext,
@@ -23,6 +24,8 @@ export class RiskService {
   constructor(
     @InjectRepository(RiskConfigEntity)
     private readonly configs: Repository<RiskConfigEntity>,
+    @InjectRepository(WatchlistEntity)
+    private readonly watchlist: Repository<WatchlistEntity>,
   ) {}
 
   async getOrCreateConfig(): Promise<RiskConfigEntity> {
@@ -74,6 +77,31 @@ export class RiskService {
         reason: `at max positions for ${ctx.symbol} (${rules.maxPerUnderlying})`,
       };
     }
+
+    // Correlated concentration: SPY + QQQ + IWM are one bet, and maxPerUnderlying
+    // won't catch that. Groups come from the watchlist, so callers don't have to
+    // know about correlation at all.
+    const groupCap = rules.maxPerCorrelationGroup ?? 1;
+    if (groupCap > 0) {
+      const groups = await this.correlationGroups();
+      const proposedGroup = groups.get(ctx.symbol);
+      // No group (unknown symbol / ungrouped) → nothing to correlate against.
+      if (proposedGroup) {
+        const peers = ctx.openPositions.filter(
+          (p) => groups.get(p.symbol) === proposedGroup,
+        );
+        if (peers.length >= groupCap) {
+          return {
+            ok: false,
+            reason:
+              `at max positions for correlation group "${proposedGroup}" ` +
+              `(${groupCap}) — already holding ${peers
+                .map((p) => p.symbol)
+                .join(', ')}`,
+          };
+        }
+      }
+    }
     const perTradeCap = (ctx.accountValue * rules.maxRiskPerTradePct) / 100;
     if (ctx.proposedRisk > perTradeCap) {
       return {
@@ -96,6 +124,16 @@ export class RiskService {
       };
     }
     return { ok: true };
+  }
+
+  /** symbol -> correlationGroup, from the watchlist (small table, read per check). */
+  private async correlationGroups(): Promise<Map<string, string>> {
+    const rows = await this.watchlist.find();
+    const map = new Map<string, string>();
+    for (const r of rows) {
+      if (r.correlationGroup) map.set(r.symbol, r.correlationGroup);
+    }
+    return map;
   }
 }
 
