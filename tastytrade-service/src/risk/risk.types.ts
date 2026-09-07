@@ -19,11 +19,20 @@ export interface RiskRules {
   killSwitch: boolean;
 }
 
-/** "Moderate" default profile (5% / 40% ≈ $125 / $1000 on a $2500 account). */
+/**
+ * Concentrated profile: 4 positions at 25% each, fully deployed (~$625/position
+ * on a $2500 account). Deliberately aggressive — the account is meant to be
+ * working at all times.
+ *
+ * At this sizing the binding risk is CORRELATION, not per-trade size: four
+ * positions that are really one bet can all hit max loss on a single move. The
+ * watchlist carries a `correlationGroup` per symbol for that reason; a
+ * per-group cap is the next rule this gate needs.
+ */
 export const DEFAULT_RULES: RiskRules = {
   maxConcurrentPositions: 4,
-  maxRiskPerTradePct: 5,
-  maxPortfolioRiskPct: 40,
+  maxRiskPerTradePct: 25,
+  maxPortfolioRiskPct: 100,
   maxPerUnderlying: 1,
   killSwitch: false,
 };

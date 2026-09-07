@@ -6,6 +6,30 @@ ETFs, managed at 50% profit / 21 DTE.** Because these are swing positions (not
 0DTE), intraday timing matters for **fill quality and entry edge**, not because
 anything expires today — so the cadence is lean.
 
+## Position sizing (drives everything else)
+
+**4 concurrent positions at 25% risk each — fully deployed.** On the $2,500 paper
+account that's **~$625 of defined risk per position**. This is deliberately
+aggressive: the account is meant to be working at all times, with no dry powder.
+
+Two consequences worth internalizing:
+
+1. **It sets the tradeable universe.** Spread risk = `width × 100 × contracts`, so
+   ~$625 buys a **5-wide spread in a single contract**. That makes the penny-wide
+   index ETFs (SPY/QQQ/IWM) the best execution — ~$2 of commissions. A $40 ETF
+   would need 6+ contracts for the same risk and **6× the commissions**, so cheap
+   underlyings are actively worse at this size. (At 5% risk the logic inverts —
+   you'd be stuck in 1-wide spreads where only cheap underlyings give real credit.)
+2. **Correlation becomes the real risk, not per-trade size.** Four positions that
+   are secretly one bet all hit max loss on a single move. SPY/QQQ/IWM are one
+   bet. That's why every watchlist row carries a **`correlationGroup`**
+   (`us_equity`, `precious_metals`, `rates`, `energy`) — and why a **per-group cap
+   is the next rule the risk gate needs**; `maxPerUnderlying: 1` alone doesn't
+   stop three correlated index spreads.
+
+Sizing should be revisited as the account grows — the universe that's optimal at
+$2,500 is not the one that's optimal at $25,000.
+
 ## Control model
 
 **Deterministic orchestrator, mechanical first.** Code owns the schedule, the risk
