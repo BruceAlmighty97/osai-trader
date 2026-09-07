@@ -85,6 +85,50 @@ midday manage, power-hour manage, review) — dispatching correctly, with handle
 still stubbed. The **afternoon entry is deliberately omitted** until the core loop
 is proven; adding it back is one row in the schedule.
 
+## Entry: how one play gets chosen
+
+Two stages, deliberately separated so the AI is a *swappable selector*, never the
+thing doing arithmetic.
+
+**Stage 1 — build a slate (always mechanical).** Take the top `ENTRY_SLATE_SIZE`
+(5) candidates off the pre-market shortlist, skipping symbols already held, and
+price them **in parallel**. Each is an ~8s DXLink chain snapshot, so five
+sequentially would burn 40s of a 15-minute tick — parallel makes it ~9s, which is
+what makes best-of affordable at all. For each: short strike = OTM put nearest
+`ENTRY_TARGET_DELTA`, long strike = widest that fits the risk budget, both legs
+priced at the mid, then rejected if the quote is stale/wide, the credit is
+non-positive, or credit/width is below the floor.
+
+Survivors get a **deterministic 0-100 score** on hard economics only:
+
+| Weight | Component | Band |
+|---|---|---|
+| 0.45 | credit ÷ width | 0 → 35% of width |
+| 0.20 | delta fit | how far the achieved short delta drifted off target |
+| 0.20 | IV rank | 30 (the qualification floor) → 80 |
+| 0.15 | quote tightness | relative bid/ask vs. the rejection threshold |
+
+Sentiment is deliberately **not** weighted here — it's noisy retail chatter and a
+coefficient for it would be false precision. It's handed to the AI instead.
+
+**Stage 2 — choose one (`ENTRY_SELECTOR`).**
+- `mechanical` (default) — take the top score.
+- `ai` — Claude gets the same slate plus the open book, and picks one index or
+  passes. It **cannot** name a symbol, invent a strike, move an expiration, or
+  size a position; the worst it can do is choose a spread code already priced and
+  validated. Its value is the judgment the score can't express — chiefly whether a
+  candidate duplicates exposure already on the book (the correlation tag catches
+  SPY+QQQ, not NVDA+SMH).
+
+The **mechanical baseline is logged on every run either way**, and divergences are
+logged explicitly, so the AI's lift is measurable rather than assumed.
+
+Then, unchanged: `RiskService.check()` gates whatever came back, and **if the gate
+rejects the pick, entry falls through to the next-best plan by score** rather than
+wasting the tick. Every run writes a `decisions` row — the full slate, the choice,
+the reasoning, the model and token usage — and the opened position links to it via
+`openDecisionId`.
+
 ## Rules baked into the schedule
 
 - **Never open in the first 30 min or the last hour** (fills + gamma) — the
@@ -156,9 +200,11 @@ only the trigger swaps — so this choice isn't a dead end. See
 8. **`trading_day` context record** — carries the pre-market shortlist across phases
    (each phase is a separate tick, so shared state goes through the DB).
 
+9. ~~Swap the mechanical picker for the **bounded AI analyst**~~ — **built.**
+   Both selectors ship behind `ENTRY_SELECTOR`; the baseline is logged on every
+   run so the lift is measurable. Still needs live trading days to judge.
+
 **Later**
-9. Swap the mechanical picker for the **bounded AI analyst**; measure the lift
-   against the mechanical baseline.
 10. DB-backed phase schedule; the optional afternoon-entry window.
 
 ## Sources
