@@ -23,9 +23,28 @@ Two consequences worth internalizing:
 2. **Correlation becomes the real risk, not per-trade size.** Four positions that
    are secretly one bet all hit max loss on a single move. SPY/QQQ/IWM are one
    bet. That's why every watchlist row carries a **`correlationGroup`**
-   (`us_equity`, `precious_metals`, `rates`, `energy`) — and why a **per-group cap
-   is the next rule the risk gate needs**; `maxPerUnderlying: 1` alone doesn't
-   stop three correlated index spreads.
+   (`us_equity`, `precious_metals`, `rates`, `energy`) and the gate enforces
+   **`maxPerCorrelationGroup: 1`**; `maxPerUnderlying: 1` alone wouldn't stop
+   three correlated index spreads.
+
+### ETF groups are tight; single stocks are intentionally ungrouped
+
+The group cap is calibrated for **index/commodity ETFs**, which really are the
+same instrument (SPY/QQQ/IWM run ~0.95 correlation — overlapping baskets). Two
+unrelated single stocks are more like 0.5-0.6, so a 1-per-sector cap would be too
+blunt for them.
+
+So **single stocks are added with `correlationGroup: null` on purpose** — the gate
+skips the check for ungrouped symbols (both as the proposed trade and as peers).
+This is a deliberate choice, not an unset field.
+
+The residual risk is real and accepted for now: correlations converge toward 1 in
+a selloff, and single-stock tails are fatter than ETF tails (gaps, earnings). Four
+"independent" stock spreads is still four bullish equity bets. **Revisit when the
+stock lane is actually enabled** (it's gated on the earnings calendar anyway) —
+the options then are a shared `single_stock` bucket with a looser cap (needs
+per-group caps rather than one global number), or a separate total-equity-beta
+rule.
 
 Sizing should be revisited as the account grows — the universe that's optimal at
 $2,500 is not the one that's optimal at $25,000.

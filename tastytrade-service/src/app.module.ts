@@ -12,6 +12,7 @@ import { PaperModule } from './paper/paper.module';
 import { RiskModule } from './risk/risk.module';
 import { OrchestratorModule } from './orchestrator/orchestrator.module';
 import { TradingModule } from './trading/trading.module';
+import { FinnhubModule } from './finnhub/finnhub.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { TradingModule } from './trading/trading.module';
     HealthModule,
     OrchestratorModule,
     TradingModule,
+    FinnhubModule,
     RiskModule,
     PaperModule,
     TastytradeModule,
