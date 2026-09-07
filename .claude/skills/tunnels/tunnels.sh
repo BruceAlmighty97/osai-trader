@@ -63,8 +63,18 @@ case "$cmd" in
     ensure_plugin
     mkdir -p "$STATE_DIR" "$LOG_DIR"
     if [ -s "$PID_FILE" ]; then
-      err "tunnels already recorded in $PID_FILE — run 'stop' first."
-      exit 1
+      # Only block if something is genuinely still running. A stale pidfile from
+      # tunnels killed by a deploy shouldn't force a manual 'stop' first.
+      alive=0
+      while read -r pid _rest; do
+        [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null && alive=$((alive + 1))
+      done <"$PID_FILE"
+      if [ "$alive" -gt 0 ]; then
+        err "$alive tunnel(s) already running — run 'stop' first."
+        exit 1
+      fi
+      echo "  (clearing stale pidfile — previous tunnels are gone)"
+      : >"$PID_FILE"
     fi
     bastion=$(get_output BastionId)
     if [ -z "$bastion" ] || [ "$bastion" = "None" ]; then
