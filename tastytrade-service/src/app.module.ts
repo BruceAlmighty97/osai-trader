@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { LoggingInterceptor } from './common/logging.interceptor';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -38,6 +40,8 @@ import { FinnhubModule } from './finnhub/finnhub.module';
         synchronize: false,
         migrationsRun: config.get<string>('NODE_ENV') === 'production',
         migrations: ['dist/migrations/*.js'],
+        // Log every SQL statement when DB_LOGGING=true (noisy; off by default).
+        logging: config.get<string>('DB_LOGGING') === 'true',
       }),
     }),
     AuthModule,
@@ -52,5 +56,6 @@ import { FinnhubModule } from './finnhub/finnhub.module';
     PersistenceModule,
     SocialModule,
   ],
+  providers: [{ provide: APP_INTERCEPTOR, useClass: LoggingInterceptor }],
 })
 export class AppModule {}

@@ -198,12 +198,19 @@ export class TastytradeService implements OnModuleInit {
   /** Volatility / liquidity metrics (IV rank, IV percentile, HV, beta, ...). */
   async getMarketMetrics(symbols: string[]): Promise<any> {
     await this.ensureLogin();
+    const started = Date.now();
+    this.logger.log(`market-metrics: requesting ${symbols.length} symbols`);
     // tastytrade wants a comma-separated `symbols=SPY,QQQ`. The SDK serializes
     // arrays as `symbols[]=SPY` (qs brackets), which production 400s — so pass a
     // pre-joined string to get the flat `symbols=` form.
-    return this.client.marketMetricsService.getMarketMetrics({
+    const result = await this.client.marketMetricsService.getMarketMetrics({
       symbols: symbols.join(','),
     });
+    const count = Array.isArray(result) ? result.length : 0;
+    this.logger.log(
+      `market-metrics: got ${count}/${symbols.length} in ${Date.now() - started}ms`,
+    );
+    return result;
   }
 
   /** DXLink quote token + streamer URL (for live quotes/greeks). */

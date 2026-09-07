@@ -55,8 +55,26 @@ export class RiskService {
    * The gate. Given the account state + a proposed trade (all $), decide whether
    * it's allowed. Percentage caps are resolved against `accountValue` here, so
    * the same policy scales across accounts of any size.
+   *
+   * Every decision is logged with its reason — when a trade doesn't happen, the
+   * log is the only record of why.
    */
   async check(ctx: RiskCheckContext): Promise<RiskCheckResult> {
+    const held = ctx.openPositions.map((p) => p.symbol).join(',') || 'none';
+    const where =
+      `${ctx.symbol} risk=$${round2(ctx.proposedRisk)} ` +
+      `acct=$${round2(ctx.accountValue)} bpAvail=$${round2(ctx.buyingPowerAvailable)} ` +
+      `open=[${held}]`;
+    const result = await this.evaluate(ctx);
+    if (result.ok) {
+      this.logger.log(`Risk gate PASSED — ${where}`);
+    } else {
+      this.logger.warn(`Risk gate REJECTED — ${where} — ${result.reason}`);
+    }
+    return result;
+  }
+
+  private async evaluate(ctx: RiskCheckContext): Promise<RiskCheckResult> {
     const rules = await this.getRules();
 
     if (rules.killSwitch) {

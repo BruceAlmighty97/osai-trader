@@ -109,3 +109,40 @@ http://localhost:3000/swagger
 - `IBKR_HOST`, `IBKR_PORT` (4002), `IBKR_CLIENT_ID` (0)
 - `IBKR_MARKET_DATA_TYPE` (3 = delayed, 1 = live)
 - `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_NAME`
+
+## Coding Guidelines
+
+### Logging — log everything
+
+This is a trading bot. When something goes wrong with real money, the logs are the
+only forensic record of what the system saw and why it acted. Default to logging
+**more** than feels necessary.
+
+**Always log:**
+- **Inbound requests** — method, path, query, body, plus response status and
+  duration. Handled globally by `LoggingInterceptor`; don't hand-roll per-route.
+- **Outbound API calls** — every external call (tastytrade, Finnhub, StockTwits):
+  what was asked for, how long it took, and what came back (counts/shape, not
+  giant dumps).
+- **Logical steps and the WHY** — not just "rejected" but "rejected: IV rank 22 <
+  30". Every decision should be reconstructable from the logs alone: which phase
+  dispatched, which candidates were dropped and why, which rule blocked a trade.
+- **Database writes** — what was saved and its identifying keys, e.g.
+  `persisted trading_day 2026-09-06: 24 candidates`.
+- **Failures** — with enough context to reproduce: status, URL, message.
+
+**NEVER log secrets.** API keys, tokens, passwords, `Authorization` / `X-API-Key`
+headers, the tastytrade refresh token, the Anthropic key. The interceptor redacts
+known-sensitive fields; keep that list current when new credentials are added.
+Logs go to CloudWatch, which is a much wider audience than the secret store.
+
+**Levels:**
+| Level | Use for |
+|---|---|
+| `log` | Meaningful business events — a phase ran, a position opened/closed |
+| `debug` | High-volume or no-op detail — a tick with no active phase |
+| `warn` | Degraded but continuing — sentiment unavailable, earnings gate not applied |
+| `error` | Failed operations, with context |
+
+Prefer one information-dense line over several sparse ones; these are read in a
+CloudWatch tail, not an IDE.

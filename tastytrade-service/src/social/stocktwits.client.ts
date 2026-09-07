@@ -45,13 +45,17 @@ export class StockTwitsClient {
 
   private async getJson(url: string): Promise<any> {
     await this.throttle();
+    const started = Date.now();
     const res = await fetch(url, { headers: { 'User-Agent': this.userAgent } });
+    const ms = Date.now() - started;
     if (!res.ok) {
       const body = await res.text().catch(() => '');
+      this.logger.error(`GET ${url} -> ${res.status} in ${ms}ms`);
       throw new Error(
         `StockTwits GET failed (${res.status}): ${body.slice(0, 160)}`,
       );
     }
+    this.logger.debug(`GET ${url} -> 200 in ${ms}ms`);
     return res.json();
   }
 
