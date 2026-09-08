@@ -17,6 +17,11 @@ export interface ArmParams {
   targetDte: number;
   maxNewPerRun: number;
   maxQuoteSpreadPct: number;
+  /**
+   * Absolute bid/ask width, in dollars, below which a leg is never rejected for
+   * being "wide". Relative spread is meaningless on a $0.15 option.
+   */
+  maxQuoteSpreadAbs: number;
   slateSize: number;
 }
 

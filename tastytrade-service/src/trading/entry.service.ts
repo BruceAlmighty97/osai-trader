@@ -87,10 +87,11 @@ export class EntryService {
           : 'mechanical',
       targetDelta: num(config.get('ENTRY_TARGET_DELTA'), 0.16),
       widthPct: num(config.get('ENTRY_WIDTH_PCT'), 0.05),
-      minCreditToWidth: num(config.get('ENTRY_MIN_CREDIT_RATIO'), 0.15),
+      minCreditToWidth: num(config.get('ENTRY_MIN_CREDIT_RATIO'), 0.1),
       targetDte: num(config.get('ENTRY_TARGET_DTE'), 45),
       maxNewPerRun: num(config.get('ENTRY_MAX_NEW_PER_RUN'), 1),
       maxQuoteSpreadPct: num(config.get('ENTRY_MAX_QUOTE_SPREAD_PCT'), 0.5),
+      maxQuoteSpreadAbs: num(config.get('ENTRY_MAX_QUOTE_SPREAD_ABS'), 0.1),
       slateSize: num(config.get('ENTRY_SLATE_SIZE'), 5),
       model: config.get('ENTRY_MODEL'),
     };
@@ -378,9 +379,10 @@ export class EntryService {
    */
   private scorePlan(p: UnscoredPlan, params: ArmParams): SpreadPlan {
     const parts: ScoreParts = {
-      // 35% of width is an excellent credit for a defined-risk spread; the 15%
-      // floor is already enforced upstream, so this band is the useful range.
-      creditToWidth: clamp01(p.creditToWidth / 0.35),
+      // 20% of width is an excellent credit at 16-delta with budget-sized width;
+      // measured live, real markets pay 8-20% here. A wider band (0-35%) pinned
+      // every candidate near 0.3 and let the lesser components drive the ranking.
+      creditToWidth: clamp01(p.creditToWidth / 0.2),
       // Chain granularity means the achieved delta drifts off target. At target
       // = 1.0; off by a full target's worth = 0.
       deltaFit:
@@ -590,18 +592,36 @@ export class EntryService {
       return null;
     }
 
-    // Stale/illiquid quote guard — a holiday or thin book gives garbage mids.
+    // Quote quality. Two distinct failures, deliberately tested differently:
+    //
+    //  1. NO BID at all — genuinely untradeable, you cannot sell it. Hard reject.
+    //     (Thin sector ETFs really do quote 0/1.40 on OTM puts; verified this is
+    //     the live book, not an incomplete snapshot — an 8s and a 20s
+    //     subscription return identical data.)
+    //  2. WIDE — only meaningful when the spread is wide in BOTH relative and
+    //     absolute terms. Relative spread alone is useless on a cheap leg: a
+    //     0.14/0.24 long leg reads as 53% but costs $0.10 to cross, which is
+    //     noise against the credit collected. Requiring both stops us rejecting
+    //     perfectly tradeable spreads over their cheapest leg.
     const relSpreads: number[] = [];
     for (const [label, leg] of [
       ['short', short],
       ['long', long],
     ] as const) {
       const mid = (leg.bid + leg.ask) / 2;
-      const rel = mid > 0 ? (leg.ask - leg.bid) / mid : Infinity;
-      if (mid <= 0 || rel > params.maxQuoteSpreadPct) {
+      const abs = leg.ask - leg.bid;
+      if (leg.bid <= 0 || mid <= 0) {
+        this.logger.warn(
+          `${tag}: ${c.symbol} — ${label} leg ${leg.strike}P has no bid ` +
+            `(${leg.bid}/${leg.ask}), untradeable; skipping`,
+        );
+        return null;
+      }
+      const rel = abs / mid;
+      if (rel > params.maxQuoteSpreadPct && abs > params.maxQuoteSpreadAbs) {
         this.logger.warn(
           `${tag}: ${c.symbol} — ${label} leg ${leg.strike}P quote too wide ` +
-            `(${leg.bid}/${leg.ask}); skipping`,
+            `(${leg.bid}/${leg.ask} = $${round2(abs)}, ${(rel * 100).toFixed(0)}%); skipping`,
         );
         return null;
       }
