@@ -167,11 +167,31 @@ export class MarkToMarketService {
 
     for (const leg of p.legs ?? []) {
       const q = leg.streamerSymbol ? quotes.get(leg.streamerSymbol) : undefined;
-      const mid =
-        q && Number.isFinite(q.bid) && Number.isFinite(q.ask)
-          ? (q.bid + q.ask) / 2
-          : null;
+      // A ZERO BID IS NOT A PRICE. Outside regular hours (and in thin books)
+      // market makers pull their bids and the feed returns bid=0 with a stale
+      // ask. Number.isFinite(0) is true, so an earlier version happily took
+      // mid = ask/2 on both legs — and when two legs returned the same garbage
+      // ask they cancelled to currentDebit = 0, i.e. "100% of max profit" on a
+      // spread opened the day before.
+      //
+      // That is not merely a cosmetic P&L error: pctOfMaxProfit is exactly what
+      // the exit engine triggers on, so a pulled bid would fabricate a profit
+      // target, close the position at an invented price, and write phantom
+      // realized P&L into the ledger. Refusing to price is always correct here;
+      // a null propagates to "unpriced" and the position is simply left alone.
+      const usable =
+        q &&
+        Number.isFinite(q.bid) &&
+        Number.isFinite(q.ask) &&
+        q.bid > 0 &&
+        q.ask > 0;
+      const mid = usable ? (q!.bid + q!.ask) / 2 : null;
       if (mid === null) {
+        this.logger.warn(
+          `mark-to-market: position #${p.id} ${p.symbol} leg ${leg.strike}${leg.right} ` +
+            `has no usable quote (${q ? `${q.bid}/${q.ask}` : 'no quote received'}) — ` +
+            `leaving position unpriced rather than guessing`,
+        );
         priced = false;
         break;
       }

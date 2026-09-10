@@ -17,8 +17,13 @@ export interface ArmConfig {
   widthPct?: number;
   minCreditToWidth?: number;
   maxQuoteSpreadPct?: number;
+  maxQuoteSpreadAbs?: number;
   slateSize?: number;
   maxNewPerRun?: number;
+  /** Exit policy — an A/B variable exactly like entry policy. */
+  profitTargetPct?: number;
+  stopMultiple?: number;
+  dteThreshold?: number;
 }
 
 /**
