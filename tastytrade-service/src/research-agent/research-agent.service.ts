@@ -27,6 +27,23 @@ export interface ResearchRequest {
   maxBudgetUsd?: number;
 }
 
+export interface TokenAccounting {
+  /** Summed across every model the run touched. */
+  totals: {
+    inputTokens: number;
+    outputTokens: number;
+    thinkingTokens: number;
+    cacheReadInputTokens: number;
+    cacheCreationInputTokens: number;
+    webSearchRequests: number;
+    totalTokens: number;
+  };
+  /** Per model — main agent (Opus) and each subagent (Sonnet) separately. */
+  byModel: Record<string, Record<string, number>>;
+  /** The SDK's flat usage field: MAIN AGENT LOOP ONLY, excludes subagents. */
+  mainLoopOnly: Record<string, unknown> | null;
+}
+
 export interface ResearchResult {
   runId: number;
   report: ResearchReport;
@@ -35,6 +52,7 @@ export interface ResearchResult {
   sessionId: string;
   durationMs: number;
   toolCalls: Record<string, number>;
+  tokens: TokenAccounting;
 }
 
 /**
@@ -127,6 +145,7 @@ export class ResearchAgentService implements OnModuleInit {
     let costUsd = 0;
     let turns = 0;
     let sessionId = '';
+    let tokens: TokenAccounting = emptyTokens();
 
     try {
       const stream = query({
@@ -160,6 +179,10 @@ export class ResearchAgentService implements OnModuleInit {
           costUsd = (message as any).total_cost_usd ?? 0;
           turns = (message as any).num_turns ?? 0;
           sessionId = (message as any).session_id ?? '';
+          tokens = summarizeTokens(
+            (message as any).modelUsage,
+            (message as any).usage,
+          );
           if ((message as any).subtype !== 'success') {
             throw new Error(`agent ended with subtype "${(message as any).subtype}"`);
           }
@@ -190,17 +213,39 @@ export class ResearchAgentService implements OnModuleInit {
         playsProposed: report.plays.length,
         reportJson: report as unknown as Record<string, any>,
         toolCalls,
+        tokenUsage: tokens as unknown as Record<string, unknown>,
+        totalTokens: tokens.totals.totalTokens,
       } as any);
 
+      const tt = tokens.totals;
       this.logger.log(
         `research run ${run.id} DONE — ${report.plays.length} play(s) from ` +
           `${report.candidatesScreened.length} screened, ${turns} turns, ` +
-          `$${costUsd.toFixed(3)}, ${Math.round(durationMs / 1000)}s | ` +
-          `tools: ${Object.entries(toolCalls).map(([k, v]) => `${k}x${v}`).join(' ') || 'none'}`,
+          `$${costUsd.toFixed(3)}, ${Math.round(durationMs / 1000)}s`,
+      );
+      this.logger.log(
+        `research run ${run.id} TOKENS — total ${tt.totalTokens.toLocaleString()} ` +
+          `(in ${tt.inputTokens.toLocaleString()}, out ${tt.outputTokens.toLocaleString()}, ` +
+          `thinking ${tt.thinkingTokens.toLocaleString()}, ` +
+          `cacheRead ${tt.cacheReadInputTokens.toLocaleString()}, ` +
+          `cacheWrite ${tt.cacheCreationInputTokens.toLocaleString()}, ` +
+          `webSearches ${tt.webSearchRequests})`,
+      );
+      for (const [model, u] of Object.entries(tokens.byModel)) {
+        this.logger.log(
+          `research run ${run.id} TOKENS[${model}] — in ${u.inputTokens} out ${u.outputTokens} ` +
+            `thinking ${u.thinkingTokens} cacheRead ${u.cacheReadInputTokens} ` +
+            `cacheWrite ${u.cacheCreationInputTokens} webSearch ${u.webSearchRequests} ` +
+            `cost $${(u.costUSD ?? 0).toFixed(4)}`,
+        );
+      }
+      this.logger.log(
+        `research run ${run.id} tools: ` +
+          (Object.entries(toolCalls).map(([k, v]) => `${k}x${v}`).join(' ') || 'none'),
       );
       this.logger.log(`research run ${run.id} bestPlay: ${report.bestPlay}`);
 
-      return { runId: run.id, report, costUsd, turns, sessionId, durationMs, toolCalls };
+      return { runId: run.id, report, costUsd, turns, sessionId, durationMs, toolCalls, tokens };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await this.runs.update(run.id, {
@@ -211,8 +256,15 @@ export class ResearchAgentService implements OnModuleInit {
         durationMs: Date.now() - started,
         sessionId,
         toolCalls,
-      });
-      this.logger.error(`research run ${run.id} FAILED after $${costUsd.toFixed(3)} — ${msg}`);
+        tokenUsage: tokens as unknown as Record<string, unknown>,
+        totalTokens: tokens.totals.totalTokens,
+      } as any);
+      // Tokens are recorded on failure too — a run that burns the budget and
+      // dies is exactly the one you want the accounting for.
+      this.logger.error(
+        `research run ${run.id} FAILED after $${costUsd.toFixed(3)} / ` +
+          `${tokens.totals.totalTokens.toLocaleString()} tokens — ${msg}`,
+      );
       throw err;
     }
   }
@@ -287,4 +339,69 @@ export class ResearchAgentService implements OnModuleInit {
       }
     }
   }
+}
+
+
+function emptyTokens(): TokenAccounting {
+  return {
+    totals: {
+      inputTokens: 0,
+      outputTokens: 0,
+      thinkingTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 0,
+      totalTokens: 0,
+    },
+    byModel: {},
+    mainLoopOnly: null,
+  };
+}
+
+/**
+ * Roll up token usage across every model a run touched.
+ *
+ * Keyed by model because one run spends on three: Opus for the main loop, and
+ * Sonnet for each of the news-scout and vol-screener subagents. The SDK's flat
+ * `usage` field is documented as MAIN AGENT LOOP ONLY and excludes subagents,
+ * so summing modelUsage is the only figure that reflects what a run actually
+ * cost. `usage` is kept alongside it rather than discarded, so the two can be
+ * compared when a run looks unexpectedly expensive.
+ *
+ * thinkingTokens are already counted inside outputTokens — reported separately
+ * for visibility, NOT added again into the total.
+ */
+function summarizeTokens(modelUsage: unknown, usage: unknown): TokenAccounting {
+  const out = emptyTokens();
+  out.mainLoopOnly = (usage as Record<string, unknown>) ?? null;
+  const entries = Object.entries((modelUsage ?? {}) as Record<string, any>);
+  for (const [model, u] of entries) {
+    const row = {
+      inputTokens: n(u?.inputTokens),
+      outputTokens: n(u?.outputTokens),
+      thinkingTokens: n(u?.thinkingTokens),
+      cacheReadInputTokens: n(u?.cacheReadInputTokens),
+      cacheCreationInputTokens: n(u?.cacheCreationInputTokens),
+      webSearchRequests: n(u?.webSearchRequests),
+      costUSD: n(u?.costUSD),
+    };
+    out.byModel[model] = row;
+    out.totals.inputTokens += row.inputTokens;
+    out.totals.outputTokens += row.outputTokens;
+    out.totals.thinkingTokens += row.thinkingTokens;
+    out.totals.cacheReadInputTokens += row.cacheReadInputTokens;
+    out.totals.cacheCreationInputTokens += row.cacheCreationInputTokens;
+    out.totals.webSearchRequests += row.webSearchRequests;
+  }
+  const t = out.totals;
+  // Cache reads/writes are billed input tokens, so they belong in the total;
+  // thinking is already inside outputTokens and must not be double-counted.
+  t.totalTokens =
+    t.inputTokens + t.outputTokens + t.cacheReadInputTokens + t.cacheCreationInputTokens;
+  return out;
+}
+
+function n(v: unknown): number {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
 }

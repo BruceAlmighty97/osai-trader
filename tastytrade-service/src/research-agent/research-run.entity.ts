@@ -69,6 +69,22 @@ export class ResearchRunEntity {
   @Column({ type: 'jsonb', nullable: true })
   toolCalls: Record<string, number> | null;
 
+  /**
+   * Token accounting, per model.
+   *
+   * `modelUsage` is keyed by model because a run spends on THREE of them: Opus
+   * for the main loop plus Sonnet for the news-scout and vol-screener
+   * subagents. The SDK's flat `usage` field covers the main agent loop ONLY and
+   * excludes subagents, so it understates a run — both are recorded, with the
+   * per-model breakdown being the honest one.
+   */
+  @Column({ type: 'jsonb', nullable: true })
+  tokenUsage: Record<string, unknown> | null;
+
+  /** Sum across every model: input, output, cache read/write, web searches. */
+  @Column({ type: 'integer', nullable: true })
+  totalTokens: number | null;
+
   @Column({ type: 'text', nullable: true })
   errorMessage: string | null;
 

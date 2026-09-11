@@ -43,6 +43,7 @@ export class ResearchAgentController {
       costUsd: result.costUsd,
       turns: result.turns,
       durationMs: result.durationMs,
+      tokens: result.tokens,
       toolCalls: result.toolCalls,
       execution,
       report: result.report,
@@ -57,8 +58,8 @@ export class ResearchAgentController {
       take: Math.min(Number(limit) || 20, 100),
       select: [
         'id', 'status', 'objective', 'model', 'costUsd', 'turns', 'durationMs',
-        'bestPlay', 'candidatesScreened', 'playsProposed', 'playsSubmitted',
-        'errorMessage', 'createdAt',
+        'totalTokens', 'bestPlay', 'candidatesScreened', 'playsProposed',
+        'playsSubmitted', 'errorMessage', 'createdAt',
       ],
     });
   }
