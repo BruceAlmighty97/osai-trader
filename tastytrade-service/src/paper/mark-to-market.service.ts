@@ -237,6 +237,49 @@ export class MarkToMarketService {
         : entryCredit > 0
           ? entryCredit * MULTIPLIER * qty
           : null;
+    const maxRiskTotal =
+      p.maxRisk !== null && p.maxRisk !== undefined ? num(p.maxRisk) * qty : null;
+
+    // A DEFINED-RISK STRUCTURE CANNOT BE WORTH MORE THAN ITS MAX PROFIT OR LESS
+    // THAN ITS MAX LOSS. If the quotes say otherwise, the quotes are wrong.
+    //
+    // Observed live on 2026-09-11 at 12:30 ET: EWZ 34/32.5P, a 1.5-wide credit
+    // spread sold for $0.23, marked at a cost-to-close of -$0.36 — the lower
+    // strike put quoted ABOVE the higher one. Both legs had a nonzero bid so the
+    // zero-bid guard passed, and the exit engine booked "259% of max profit",
+    // realizing $57 on a trade whose ceiling was $23. That $34 per arm is
+    // phantom P&L the ledger cannot unwind on its own.
+    //
+    // A crossed or stale leg on a thin name is not a price. Bound the result to
+    // what the structure can physically be worth, with a little slack for
+    // rounding, and refuse to price anything outside it.
+    const slack = 1.02;
+    if (
+      (maxProfitTotal !== null && grossPnl > maxProfitTotal * slack) ||
+      (maxRiskTotal !== null && grossPnl < -maxRiskTotal * slack)
+    ) {
+      this.logger.warn(
+        `mark-to-market: position #${p.id} ${p.symbol} IMPOSSIBLE VALUE — gross P&L ` +
+          `$${round2(grossPnl)} outside [-$${maxRiskTotal ?? '?'}, +$${maxProfitTotal ?? '?'}] ` +
+          `(cost to close ${round2(currentDebit)} vs entry ${entryCredit}). A defined-risk ` +
+          `spread cannot be worth this; a leg quote is crossed or stale. Leaving unpriced.`,
+      );
+      return {
+        positionId: p.id,
+        arm: armNames.get(p.accountId as number) ?? 'unassigned',
+        symbol: p.symbol,
+        strategy: p.strategy,
+        expiration: p.expiration,
+        dte,
+        quantity: qty,
+        entryCredit: round2(entryCredit),
+        currentDebit: null,
+        unrealizedPnl: null,
+        pctOfMaxProfit: null,
+        maxProfit: maxProfitTotal === null ? null : round2(maxProfitTotal),
+        maxRisk: maxRiskTotal,
+      };
+    }
 
     return {
       positionId: p.id,
