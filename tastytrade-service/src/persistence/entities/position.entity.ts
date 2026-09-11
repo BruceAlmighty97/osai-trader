@@ -33,7 +33,12 @@ export class PositionEntity {
   @Column({ type: 'varchar' })
   strategy: StrategyType;
 
-  /** Expiration of the legs (all legs share one expiration for our spreads). */
+  /**
+   * For single-expiration spreads, the expiration of every leg. For a CALENDAR,
+   * the FRONT (nearest) expiration — which is the one that matters for the DTE
+   * management rule, since the front leg expiring is the event. Per-leg
+   * expirations live on the legs themselves when they differ.
+   */
   @Column({ type: 'varchar' })
   expiration: string;
 
@@ -52,6 +57,18 @@ export class PositionEntity {
   /** Defined max risk per spread unit = (width - credit) * 100. */
   @Column({ type: 'decimal', precision: 12, scale: 4, nullable: true })
   maxRisk: number | null;
+
+  /**
+   * Max profit in DOLLARS per spread unit.
+   *
+   * For credit structures this is just entryCredit x 100, but for debit spreads
+   * and calendars it is not derivable from the entry price at all — so it is
+   * stored. Everything that reasons about "% of max profit" (the 50% exit rule,
+   * mark-to-market) reads this rather than assuming credit == max profit, which
+   * is only true for credit structures.
+   */
+  @Column({ type: 'decimal', precision: 12, scale: 4, nullable: true })
+  maxProfit: number | null;
 
   @Index()
   @Column({ type: 'varchar', default: PositionStatus.OPEN })

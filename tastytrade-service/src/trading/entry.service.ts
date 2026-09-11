@@ -109,10 +109,29 @@ export class EntryService {
       return { phase: TradingPhase.ENTRY, ran: false, summary: msg };
     }
 
-    const arms = await this.paper.listArms(true);
+    // Arms with selector 'agent' are owned by the research agent, which does its
+    // own discovery, structures and sizing. Running the mechanical funnel over
+    // them too would fill their books with bull put spreads and destroy the
+    // comparison. They are still managed and exited by the MANAGE phase.
+    const allArms = await this.paper.listArms(true);
+    const selectorFor = (a: (typeof allArms)[number]) =>
+      a.config?.selector ?? this.defaults.selector;
+    const arms = allArms.filter((a) => selectorFor(a) !== 'agent');
+    const skipped = allArms.filter((a) => selectorFor(a) === 'agent');
+    if (skipped.length) {
+      this.logger.log(
+        `entry ${date}: skipping agent-owned arm(s) ${skipped.map((a) => a.name).join(', ')} ` +
+          `— the research agent trades those`,
+      );
+    }
+    if (!arms.length) {
+      const msg = 'no mechanical arms enabled';
+      this.logger.log(`entry ${date}: ${msg}`);
+      return { phase: TradingPhase.ENTRY, ran: false, summary: msg };
+    }
     this.logger.log(
       `entry ${date}: ${day.shortlist.length} candidates | ${arms.length} active arm(s): ` +
-        arms.map((a) => `${a.name}(${a.config?.selector ?? this.defaults.selector})`).join(', '),
+        arms.map((a) => `${a.name}(${selectorFor(a)})`).join(', '),
     );
 
     // ---- Stage 1: what does each arm want to look at? ---------------------

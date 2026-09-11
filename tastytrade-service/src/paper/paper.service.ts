@@ -130,9 +130,11 @@ export class PaperService {
     if (!dto.legs?.length) {
       throw new BadRequestException('legs must not be empty');
     }
-    const credit = num(dto.creditPerSpread); // per share
-    const maxRiskPerShare = num(dto.maxRiskPerSpread); // per share
-    if (credit < 0) throw new BadRequestException('creditPerSpread must be >= 0');
+    // SIGNED, per share: positive = credit received (we keep premium), negative
+    // = debit paid (debit spreads, calendars). Rejecting negatives used to make
+    // every debit structure impossible to record at all.
+    const credit = num(dto.creditPerSpread);
+    const maxRiskPerShare = num(dto.maxRiskPerSpread); // per share, always > 0
     if (maxRiskPerShare <= 0) {
       throw new BadRequestException('maxRiskPerSpread must be > 0');
     }
@@ -169,7 +171,23 @@ export class PaperService {
       quantity: 1,
       // Persisted so mark-to-market can re-quote the exact contract later.
       ...(l.streamerSymbol ? { streamerSymbol: l.streamerSymbol } : {}),
+      // Only differs for calendars; single-expiration spreads inherit the
+      // position's expiration.
+      ...(l.expiration && l.expiration !== dto.expiration
+        ? { expiration: l.expiration }
+        : {}),
     }));
+
+    // Max profit in dollars per spread unit. Credit structures keep the
+    // premium; debit structures do not, and their max profit cannot be derived
+    // from the entry price — so take what the caller computed, falling back to
+    // the credit-structure identity.
+    const maxProfitPerUnit =
+      dto.maxProfitPerSpread != null
+        ? num(dto.maxProfitPerSpread)
+        : credit > 0
+          ? credit * MULTIPLIER
+          : null;
 
     const position = this.positions.create({
       symbol,
@@ -177,8 +195,9 @@ export class PaperService {
       expiration: dto.expiration,
       legs,
       quantity: contracts,
-      entryCredit: credit,
+      entryCredit: credit, // signed: negative for debit structures
       maxRisk: riskPerUnit, // $ per spread unit (matches getSummary/bpUsed)
+      maxProfit: maxProfitPerUnit,
       status: PositionStatus.OPEN,
       accountId: acct.id,
       openDecisionId: dto.decisionId ?? null,
@@ -187,8 +206,9 @@ export class PaperService {
     });
     const saved = await this.positions.save(position);
     this.logger.log(
-      `Opened paper ${dto.strategy} on ${saved.symbol} x${contracts} @ ${credit} credit ` +
-        `(id=${saved.id}, arm=${acct.name})`,
+      `Opened paper ${dto.strategy} on ${saved.symbol} x${contracts} @ ` +
+        `${credit >= 0 ? `${credit} credit` : `${Math.abs(credit)} debit`} ` +
+        `(id=${saved.id}, arm=${acct.name}, maxRisk=$${riskPerUnit}, maxProfit=$${maxProfitPerUnit ?? '?'})`,
     );
     return saved;
   }
@@ -200,10 +220,10 @@ export class PaperService {
     if (position.status !== PositionStatus.OPEN) {
       throw new BadRequestException(`position ${id} is already closed`);
     }
+    // SIGNED, per share: positive = we pay to close (buying back a credit
+    // spread), negative = we receive to close (selling out a debit spread).
+    // The realization formula below is correct for both.
     const closeDebit = num(dto.closeDebitPerSpread);
-    if (closeDebit < 0) {
-      throw new BadRequestException('closeDebitPerSpread must be >= 0');
-    }
 
     const qty = position.quantity;
     const entryCredit = num(position.entryCredit);

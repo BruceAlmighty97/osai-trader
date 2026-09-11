@@ -18,6 +18,7 @@
 		"migration:revert": "npm run typeorm -- migration:revert"
 	},
 	"dependencies": {
+		"@anthropic-ai/claude-agent-sdk": "^0.3.268",
 		"@anthropic-ai/sdk": "^0.110.0",
 		"@nestjs/common": "^11.0.1",
 		"@nestjs/config": "^4.0.3",
@@ -30,7 +31,8 @@
 		"pg": "^8.13.1",
 		"reflect-metadata": "^0.2.2",
 		"rxjs": "^7.8.1",
-		"typeorm": "^0.3.20"
+		"typeorm": "^0.3.20",
+		"zod": "^4.6.2"
 	},
 	"devDependencies": {
 		"@nestjs/cli": "^11.0.0",

@@ -33,8 +33,11 @@ interface ArmManageOutcome {
  *
  * Rules, in firing order (first match wins, and the order is the priority):
  *
- *   1. STOP LOSS   — cost to close >= stopMultiple x credit received. Risk
- *                    control outranks everything; take the loss.
+ *   1. STOP LOSS   — unrealized loss >= stopMultiple x MAX PROFIT. For a credit
+ *                    spread that is the familiar "2x the credit received";
+ *                    stated against max profit it is also correct for debit
+ *                    structures, whose entry price is a cost, not a maximum
+ *                    gain. Risk control outranks everything; take the loss.
  *   2. PROFIT      — captured >= profitTargetPct of max profit. The tastytrade
  *                    200k-trade result: harvesting at 50% beats holding to
  *                    expiry on both win rate and risk-adjusted return, because
@@ -130,8 +133,8 @@ export class ManagementService {
             `${tag}: #${pos.positionId} ${pos.symbol} HOLD — ` +
               `${(pos.pctOfMaxProfit * 100).toFixed(0)}% of max ` +
               `(target ${(thresholds.profitTargetPct * 100).toFixed(0)}%), ` +
-              `debit ${pos.currentDebit} vs credit ${pos.entryCredit} ` +
-              `(stop ${round2(pos.entryCredit * thresholds.stopMultiple)}), ` +
+              `P&L $${pos.unrealizedPnl} of $${pos.maxProfit ?? '?'} max ` +
+              `(stop at $${pos.maxProfit ? round2(-thresholds.stopMultiple * pos.maxProfit) : '?'}), ` +
               `${pos.dte}d left (roll at ${thresholds.dteThreshold}d)`,
           );
           continue;
@@ -195,15 +198,26 @@ export class ManagementService {
   ): ExitVerdict | null {
     const debit = pos.currentDebit as number;
     const captured = pos.pctOfMaxProfit as number;
-    const stopAt = pos.entryCredit * t.stopMultiple;
 
-    if (pos.entryCredit > 0 && debit >= stopAt) {
-      return {
-        reason: ExitReason.STOP_LOSS,
-        why:
-          `cost to close ${debit} >= ${t.stopMultiple}x credit ` +
-          `(${round2(stopAt)})`,
-      };
+    // STOP expressed against MAX PROFIT, not the entry credit.
+    //
+    // "2x the credit received" is the familiar formulation, but it only makes
+    // sense for a credit structure, where max profit IS the credit. Stated as
+    // "unrealized loss >= stopMultiple x max profit" it is arithmetically the
+    // same rule for a credit spread and also correct for a debit spread, where
+    // the entry price is a cost rather than a maximum gain. The old form
+    // compared a debit-spread's cost-to-close against a NEGATIVE entryCredit
+    // and could never fire.
+    if (pos.maxProfit !== null && pos.maxProfit > 0 && pos.unrealizedPnl !== null) {
+      const stopAtLoss = -t.stopMultiple * pos.maxProfit;
+      if (pos.unrealizedPnl <= stopAtLoss) {
+        return {
+          reason: ExitReason.STOP_LOSS,
+          why:
+            `unrealized $${round2(pos.unrealizedPnl)} <= ${t.stopMultiple}x max profit ` +
+            `($${round2(stopAtLoss)}); cost to close ${debit} vs entry ${pos.entryCredit}`,
+        };
+      }
     }
 
     if (captured >= t.profitTargetPct) {

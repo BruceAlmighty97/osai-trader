@@ -8,11 +8,28 @@
 
 /** The strategy playbook — mirrors the AI suggestion enum in strategy.service.ts. */
 export enum StrategyType {
+  // Credit structures — open for a net credit, max profit = credit kept.
   BULL_PUT_SPREAD = 'bull_put_spread',
   BEAR_CALL_SPREAD = 'bear_call_spread',
   IRON_CONDOR = 'iron_condor',
   IRON_BUTTERFLY = 'iron_butterfly',
   COVERED_CALL = 'covered_call',
+  // Debit structures — open for a net DEBIT. entryCredit is negative for these
+  // and max profit is NOT the entry price, so anything reasoning about profit
+  // must use the stored maxProfit rather than assuming credit == max profit.
+  CALL_DEBIT_SPREAD = 'call_debit_spread',
+  PUT_DEBIT_SPREAD = 'put_debit_spread',
+  /** Legs in DIFFERENT expirations; `expiration` holds the FRONT (nearest) one. */
+  CALENDAR = 'calendar',
+}
+
+/** Credit structures keep the premium; debit structures pay it. */
+export function isDebitStrategy(s: StrategyType | string): boolean {
+  return (
+    s === StrategyType.CALL_DEBIT_SPREAD ||
+    s === StrategyType.PUT_DEBIT_SPREAD ||
+    s === StrategyType.CALENDAR
+  );
 }
 
 export enum PositionStatus {
@@ -68,4 +85,10 @@ export interface OptionLeg {
   quantity: number; // contracts per spread unit
   streamerSymbol?: string; // DXLink symbol for live re-quote
   entryPrice?: number; // per-contract price at entry, if known
+  /**
+   * Set only when this leg's expiration differs from the position's — i.e.
+   * calendars. Single-expiration spreads leave it undefined and inherit
+   * `position.expiration`.
+   */
+  expiration?: string;
 }

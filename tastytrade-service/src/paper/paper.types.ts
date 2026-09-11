@@ -26,6 +26,13 @@ class SuggestionLegInput {
 
   @ApiPropertyOptional({
     description:
+      "This leg's expiration, when it differs from the position's (calendars only).",
+    example: '2026-09-25',
+  })
+  expiration?: string;
+
+  @ApiPropertyOptional({
+    description:
       'DXLink streamer symbol, so mark-to-market can re-quote this leg without refetching the chain.',
     example: '.SPY261017P440',
   })
@@ -47,7 +54,8 @@ export class OpenFromSuggestionDto {
   legs: SuggestionLegInput[];
 
   @ApiProperty({
-    description: 'Net credit per spread unit (the AI targetCreditPerSpread).',
+    description:
+      'SIGNED net price per spread unit, per share. Positive = credit received; NEGATIVE = debit paid (debit spreads, calendars).',
     example: 0.62,
   })
   creditPerSpread: number;
@@ -57,6 +65,13 @@ export class OpenFromSuggestionDto {
     example: 4.38,
   })
   maxRiskPerSpread: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Max profit in DOLLARS per spread unit. Required for debit structures, where it is not derivable from the entry price. Defaults to credit x 100 for credit structures.',
+    example: 62,
+  })
+  maxProfitPerSpread?: number;
 
   @ApiPropertyOptional({ description: 'Spread units to open.', default: 1 })
   contracts?: number;
@@ -78,7 +93,7 @@ export class OpenFromSuggestionDto {
 export class ClosePositionDto {
   @ApiProperty({
     description:
-      'Debit per spread unit to close (what you pay to buy it back). 0 = expired worthless / max profit.',
+      'SIGNED price per spread unit to close. Positive = you pay to buy it back (0 = expired worthless on a credit spread). NEGATIVE = you receive a credit to close, which is how a debit structure is exited.',
     example: 0.2,
   })
   closeDebitPerSpread: number;
@@ -133,6 +148,8 @@ export interface PositionValuation {
    * credit is kept.
    */
   pctOfMaxProfit: number | null;
+  /** Dollars for the whole position — NOT assumed equal to the entry credit. */
+  maxProfit: number | null;
   maxRisk: number | null;
 }
 

@@ -215,14 +215,28 @@ export class MarkToMarketService {
         currentDebit: null,
         unrealizedPnl: null,
         pctOfMaxProfit: null,
+        maxProfit: p.maxProfit === null ? null : round2(num(p.maxProfit) * qty),
         maxRisk: p.maxRisk === null ? null : num(p.maxRisk),
       };
     }
 
     // Commissions were charged on open only, matching PaperService.close().
     const commission = COMMISSION_PER_CONTRACT * (p.legs?.length ?? 0) * qty;
-    const unrealizedPnl =
-      (entryCredit - currentDebit) * MULTIPLIER * qty - commission;
+    // Signed throughout: entryCredit is negative for a debit structure and
+    // currentDebit is negative when closing it would pay us. The subtraction is
+    // correct for both directions.
+    const grossPnl = (entryCredit - currentDebit) * MULTIPLIER * qty;
+    const unrealizedPnl = grossPnl - commission;
+
+    // Max profit in dollars for the whole position. Credit structures keep the
+    // premium, so credit x 100 is the identity; debit structures do not, which
+    // is why it is stored at open. Legacy rows predate the column.
+    const maxProfitTotal =
+      p.maxProfit !== null && p.maxProfit !== undefined
+        ? num(p.maxProfit) * qty
+        : entryCredit > 0
+          ? entryCredit * MULTIPLIER * qty
+          : null;
 
     return {
       positionId: p.id,
@@ -235,11 +249,14 @@ export class MarkToMarketService {
       entryCredit: round2(entryCredit),
       currentDebit: round2(currentDebit),
       unrealizedPnl: round2(unrealizedPnl),
-      // The number the 50%-profit rule fires on. 1.0 = the spread is worthless
-      // and we keep the whole credit.
+      maxProfit: maxProfitTotal === null ? null : round2(maxProfitTotal),
+      // The number the 50%-profit rule fires on, measured against ACTUAL max
+      // profit rather than the entry price. For a credit spread those are the
+      // same thing; for a debit spread they are not remotely the same, and the
+      // old formula returned a negative number for a winning trade.
       pctOfMaxProfit:
-        entryCredit > 0
-          ? round2((entryCredit - currentDebit) / entryCredit)
+        maxProfitTotal && maxProfitTotal > 0
+          ? round2(grossPnl / maxProfitTotal)
           : null,
       maxRisk: p.maxRisk === null ? null : num(p.maxRisk),
     };

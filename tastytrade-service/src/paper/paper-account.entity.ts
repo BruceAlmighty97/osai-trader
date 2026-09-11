@@ -8,8 +8,14 @@ import {
 
 /** Per-arm overrides. Anything unset falls back to the ENTRY_* env defaults. */
 export interface ArmConfig {
-  /** Who picks one spread off the scored slate. */
-  selector?: 'mechanical' | 'ai';
+  /**
+   * Who decides what this arm trades.
+   *   mechanical — top deterministic score off the slate entry built
+   *   ai         — Claude picks from that same slate
+   *   agent      — the research agent owns this arm entirely; the mechanical
+   *                entry phase SKIPS it (it still gets managed/exited normally)
+   */
+  selector?: 'mechanical' | 'ai' | 'agent';
   /** Model for the AI selector, when this arm uses one. */
   model?: string;
   targetDelta?: number;

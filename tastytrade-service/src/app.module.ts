@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { LoggingInterceptor } from './common/logging.interceptor';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ResearchAgentModule } from './research-agent/research-agent.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { TastytradeModule } from './tastytrade/tastytrade.module';
@@ -55,6 +56,7 @@ import { FinnhubModule } from './finnhub/finnhub.module';
     StrategyModule,
     PersistenceModule,
     SocialModule,
+    ResearchAgentModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: LoggingInterceptor }],
 })

@@ -9,7 +9,7 @@
  * arm's `config` overrides applied on top.
  */
 export interface ArmParams {
-  selector: 'mechanical' | 'ai';
+  selector: 'mechanical' | 'ai' | 'agent';
   model?: string;
   targetDelta: number;
   widthPct: number;
