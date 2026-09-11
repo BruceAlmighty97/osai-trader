@@ -41,9 +41,26 @@ export class ResearchScheduler {
     );
   }
 
-  /** 09:45 and 13:30 ET on trading days — after the open settles, and midday. */
-  @Cron('0 45 9,13 * * 1-5', { timeZone: 'America/New_York' })
-  async scheduled(): Promise<void> {
+  /**
+   * 09:45 ET — after the open has settled and quotes have tightened.
+   *
+   * Two decorators rather than one expression: the spec's times are 08:45 and
+   * 12:30 CT, i.e. minute 45 of one hour and minute 30 of another, which a
+   * single cron field cannot express. `0 45 9,13` quietly meant 09:45 AND
+   * 13:45.
+   */
+  @Cron('0 45 9 * * 1-5', { timeZone: 'America/New_York' })
+  async morningRun(): Promise<void> {
+    await this.scheduled();
+  }
+
+  /** 13:30 ET — midday, after the lunch lull. */
+  @Cron('0 30 13 * * 1-5', { timeZone: 'America/New_York' })
+  async middayRun(): Promise<void> {
+    await this.scheduled();
+  }
+
+  private async scheduled(): Promise<void> {
     if (!this.enabled) return;
     const now = new Date();
     if (!this.calendar.isTradingDay(now)) {
