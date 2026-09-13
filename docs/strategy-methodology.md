@@ -85,9 +85,11 @@ Consequence: **as written, the mechanical vertical arm is near-dormant.** The
 structures the playbook says *can* pay 25 %+ are the rich-credit ones (iron
 fly C ≥ 0.5 W, credit BWB, condors combining two sides), which only the
 research arm can build today (stage 5 adds them to the mechanical engine).
-Stage 0 ships playbook-strict; the per-arm knobs (`minCreditToWidth`,
-`minCreditAbs`, `maxShortDelta`) exist so a relaxed arm can run alongside as a
-measured A/B rather than a silent loosening.
+Stage 0 ships `mech`/`ai` playbook-strict and adds a **`mech-relaxed`** arm
+(migration `1788730000000`) that overrides only the credit gates —
+`minCreditToWidth` 0.18, `minCreditAbs` 0.20, `thinCreditMaxDelta` 0.25 — so the
+cost of the floor is measured as an A/B rather than loosened silently. Judge it
+on the decision log and loser size, not on a few weeks of P&L.
 
 ## Sizing reality on $2,500
 

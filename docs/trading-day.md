@@ -141,8 +141,10 @@ paper account plus a `config` blob of overrides on the `ENTRY_*` defaults —
 
 | Arm | Config | Testing |
 |---|---|---|
-| `mech` | `{"selector":"mechanical"}` | Baseline — highest deterministic score |
+| `mech` | `{"selector":"mechanical"}` | Baseline — highest deterministic score, playbook-strict credit gates |
 | `ai` | `{"selector":"ai"}` | Claude picks from the same scored slate |
+| `mech-relaxed` | `{"selector":"mechanical","minCreditToWidth":0.18,"minCreditAbs":0.2,"thinCreditMaxDelta":0.25}` | Same funnel with the credit floor relaxed — measures what the playbook's 25 % floor costs (see strategy-methodology.md "Known tension") |
+| `research` | `{"selector":"agent"}` | Claude agent with web research; builds its own structures |
 
 Each arm keeps its **own book**, starting from the same $2,500. That's the point:
 once the arms pick differently their holdings diverge, and a portfolio-level effect
