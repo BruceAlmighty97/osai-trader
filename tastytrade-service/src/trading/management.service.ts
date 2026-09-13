@@ -43,7 +43,15 @@ interface ArmManageOutcome {
  *                    expiry on both win rate and risk-adjusted return, because
  *                    the last 50% of decay costs you weeks of gamma exposure.
  *   3. DTE         — at/inside dteThreshold days. Gamma ramps hard into the
- *                    final weeks; exit regardless of P&L.
+ *                    final sessions; exit regardless of P&L. Playbook 02 T8:
+ *                    close two trading days before expiration. The stage-1
+ *                    exit engine makes this NYSE-calendar-aware; until then
+ *                    the default is 3 calendar days (a day early for a Friday
+ *                    expiry, which is the conservative side).
+ *                    TRANSITION: positions opened under the old 45-DTE policy
+ *                    (dteAtOpen > LEGACY_DTE_EXIT) still exit at 21 DTE — the
+ *                    rule they were opened under — rather than being carried
+ *                    into a gamma window that policy never intended.
  *
  * Every threshold is per-arm overridable (ArmConfig), so exit policy is an A/B
  * variable exactly like entry policy.
@@ -53,6 +61,12 @@ interface ArmManageOutcome {
  * them. The future seam is judgment on the PROFIT and DTE cases only (take /
  * hold / roll); the stop is never negotiable.
  */
+/**
+ * Positions opened with more than this many DTE predate the 7-14 DTE playbook
+ * and keep the 21-DTE exit they were opened under.
+ */
+const LEGACY_DTE_EXIT = 21;
+
 @Injectable()
 export class ManagementService {
   private readonly logger = new Logger(ManagementService.name);
@@ -67,7 +81,7 @@ export class ManagementService {
   ) {
     this.profitTargetPct = num(config.get('MANAGE_PROFIT_TARGET_PCT'), 0.5);
     this.stopMultiple = num(config.get('MANAGE_STOP_MULTIPLE'), 2);
-    this.dteThreshold = num(config.get('MANAGE_DTE_THRESHOLD'), 21);
+    this.dteThreshold = num(config.get('MANAGE_DTE_THRESHOLD'), 3);
     this.logger.log(
       `manage defaults: profitTarget=${this.profitTargetPct} ` +
         `stopMultiple=${this.stopMultiple}x dteThreshold=${this.dteThreshold}d ` +
@@ -135,7 +149,11 @@ export class ManagementService {
               `(target ${(thresholds.profitTargetPct * 100).toFixed(0)}%), ` +
               `P&L $${pos.unrealizedPnl} of $${pos.maxProfit ?? '?'} max ` +
               `(stop at $${pos.maxProfit ? round2(-thresholds.stopMultiple * pos.maxProfit) : '?'}), ` +
-              `${pos.dte}d left (roll at ${thresholds.dteThreshold}d)`,
+              `${pos.dte}d left (time stop at ${
+                pos.dteAtOpen !== null && pos.dteAtOpen > LEGACY_DTE_EXIT
+                  ? Math.max(thresholds.dteThreshold, LEGACY_DTE_EXIT)
+                  : thresholds.dteThreshold
+              }d)`,
           );
           continue;
         }
@@ -229,10 +247,15 @@ export class ManagementService {
       };
     }
 
-    if (pos.dte !== null && pos.dte <= t.dteThreshold) {
+    // A legacy 45-DTE position keeps its own, earlier, exit.
+    const legacy = pos.dteAtOpen !== null && pos.dteAtOpen > LEGACY_DTE_EXIT;
+    const dteExit = legacy ? Math.max(t.dteThreshold, LEGACY_DTE_EXIT) : t.dteThreshold;
+    if (pos.dte !== null && pos.dte <= dteExit) {
       return {
         reason: ExitReason.DTE_ROLL,
-        why: `${pos.dte}d to expiration <= ${t.dteThreshold}d gamma threshold`,
+        why:
+          `${pos.dte}d to expiration <= ${dteExit}d time stop` +
+          (legacy ? ` (legacy position opened at ${pos.dteAtOpen} DTE under the 45-DTE policy)` : ''),
       };
     }
 

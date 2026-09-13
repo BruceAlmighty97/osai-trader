@@ -11,10 +11,34 @@
 export interface ArmParams {
   selector: 'mechanical' | 'ai' | 'agent';
   model?: string;
+  /** Short strike |delta| to aim for (playbook 02 T2: 0.20). */
   targetDelta: number;
+  /** Achieved short |delta| must land inside [minShortDelta, maxShortDelta]. */
+  minShortDelta: number;
+  maxShortDelta: number;
   widthPct: number;
+  /** Hard floor on credit/width (playbook 02 T4: 0.25). Below this = no trade. */
   minCreditToWidth: number;
+  /**
+   * Target credit/width (0.33). Between the floor and the target the trade is
+   * accepted only when the short delta is <= thinCreditMaxDelta — paid less,
+   * so it must sit further out.
+   */
+  targetCreditToWidth: number;
+  thinCreditMaxDelta: number;
+  /** Minimum gross credit per share (playbook 01 A6: $0.30 on a vertical). */
+  minCreditAbs: number;
+  /**
+   * Short strike distance in 1-SD expected moves (02 T5 / 03 §6): strikes at
+   * or beyond preferredEmMultiple (1.0) are chosen first; strikes between
+   * minEmMultiple (0.8) and preferred are a fallback; below min is rejected.
+   */
+  minEmMultiple: number;
+  preferredEmMultiple: number;
+  /** Expiration: nearest to targetDte, but only inside [minDte, maxDte]. */
   targetDte: number;
+  minDte: number;
+  maxDte: number;
   maxNewPerRun: number;
   maxQuoteSpreadPct: number;
   /**
@@ -54,6 +78,10 @@ export interface SpreadPlan {
   shortStreamerSymbol?: string;
   longStreamerSymbol?: string;
   shortDelta: number;
+  /** 1-SD expected move to expiry ($), from the short strike's IV: S·σ·√(DTE/365). */
+  expectedMove: number | null;
+  /** (spot − shortStrike) / expectedMove — how many SDs OTM the short strike sits. */
+  emMultiple: number | null;
   width: number;
   /** Net credit per share (short mid − long mid). */
   credit: number;

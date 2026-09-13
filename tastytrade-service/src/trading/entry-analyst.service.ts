@@ -224,7 +224,8 @@ export class EntryAnalystService {
           `[${i}] ${p.symbol}${p.correlationGroup ? ` (group: ${p.correlationGroup})` : ' (ungrouped single stock)'}`,
           `    bull put spread ${p.shortStrike}/${p.longStrike}P, exp ${p.expiration} (${p.dte} DTE)`,
           `    underlying ${p.underlyingPrice}, short strike is ${pct((p.underlyingPrice - p.shortStrike) / p.underlyingPrice)} below spot`,
-          `    short delta ${p.shortDelta.toFixed(3)}, width ${p.width}`,
+          `    short delta ${p.shortDelta.toFixed(3)}, width ${p.width}` +
+            (p.emMultiple !== null ? `, short strike ${p.emMultiple}x the 1-SD expected move ($${p.expectedMove})` : ''),
           `    credit $${(p.credit * 100).toFixed(0)} / max risk $${(p.riskPerShare * 100).toFixed(0)} (credit is ${pct(p.creditToWidth)} of width)`,
           `    IV rank ${p.ivRank ?? 'n/a'}, quote spread ${pct(p.avgRelSpread)}, StockTwits ${sentiment}`,
           `    deterministic score ${p.score.toFixed(1)}/100 ` +

@@ -18,6 +18,16 @@ import {
   StrategyType,
 } from '../persistence/persistence.types';
 
+/**
+ * Round-trip fee budget for a 2-leg, 1-lot vertical (01 §3: open $2.24 + close
+ * $0.24 + TAF). Counted inside the per-position risk cap because a max-loss
+ * outcome pays them too.
+ */
+const ROUND_TRIP_FEES_2LEG = 2.5;
+
+/** Widest (ask − bid) / mid on the UNDERLYING before its mid is distrusted as spot. */
+const MAX_UNDERLYING_QUOTE_REL = 0.005;
+
 /** A priced spread before scoring — everything except the score itself. */
 type UnscoredPlan = Omit<SpreadPlan, 'score' | 'scoreParts'>;
 
@@ -85,10 +95,21 @@ export class EntryService {
         String(config.get('ENTRY_SELECTOR') ?? 'mechanical').toLowerCase() === 'ai'
           ? 'ai'
           : 'mechanical',
-      targetDelta: num(config.get('ENTRY_TARGET_DELTA'), 0.16),
+      // Playbook defaults (docs/playbook/00-README.md canonical table). Every
+      // one is an env default an arm may override.
+      targetDelta: num(config.get('ENTRY_TARGET_DELTA'), 0.2),
+      minShortDelta: num(config.get('ENTRY_MIN_SHORT_DELTA'), 0.15),
+      maxShortDelta: num(config.get('ENTRY_MAX_SHORT_DELTA'), 0.25),
       widthPct: num(config.get('ENTRY_WIDTH_PCT'), 0.05),
-      minCreditToWidth: num(config.get('ENTRY_MIN_CREDIT_RATIO'), 0.1),
-      targetDte: num(config.get('ENTRY_TARGET_DTE'), 45),
+      minCreditToWidth: num(config.get('ENTRY_MIN_CREDIT_RATIO'), 0.25),
+      targetCreditToWidth: num(config.get('ENTRY_TARGET_CREDIT_RATIO'), 0.33),
+      thinCreditMaxDelta: num(config.get('ENTRY_THIN_CREDIT_MAX_DELTA'), 0.2),
+      minCreditAbs: num(config.get('ENTRY_MIN_CREDIT_ABS'), 0.3),
+      minEmMultiple: num(config.get('ENTRY_MIN_EM_MULTIPLE'), 0.8),
+      preferredEmMultiple: num(config.get('ENTRY_PREFERRED_EM_MULTIPLE'), 1.0),
+      targetDte: num(config.get('ENTRY_TARGET_DTE'), 10),
+      minDte: num(config.get('ENTRY_MIN_DTE'), 7),
+      maxDte: num(config.get('ENTRY_MAX_DTE'), 14),
       maxNewPerRun: num(config.get('ENTRY_MAX_NEW_PER_RUN'), 1),
       maxQuoteSpreadPct: num(config.get('ENTRY_MAX_QUOTE_SPREAD_PCT'), 0.5),
       maxQuoteSpreadAbs: num(config.get('ENTRY_MAX_QUOTE_SPREAD_ABS'), 0.1),
@@ -202,12 +223,17 @@ export class EntryService {
    * prices rather than two snapshots taken seconds apart.
    */
   private async priceUnion(runs: ArmRun[]): Promise<Map<string, any>> {
-    const wanted = new Map<string, { symbol: string; dte: number }>();
+    const wanted = new Map<
+      string,
+      { symbol: string; dte: number; window: { min: number; max: number } }
+    >();
     for (const run of runs) {
       for (const c of run.candidates) {
-        wanted.set(snapKey(c.symbol, run.params.targetDte), {
+        const window = { min: run.params.minDte, max: run.params.maxDte };
+        wanted.set(snapKey(c.symbol, run.params), {
           symbol: c.symbol,
           dte: run.params.targetDte,
+          window,
         });
       }
     }
@@ -218,15 +244,15 @@ export class EntryService {
     const requestedTotal = runs.reduce((n, r) => n + r.candidates.length, 0);
     this.logger.log(
       `entry: pricing ${wanted.size} unique chain(s) in parallel ` +
-        `(${requestedTotal} arm-requests deduped) — ${[...wanted.values()].map((w) => `${w.symbol}@${w.dte}d`).join(', ')}`,
+        `(${requestedTotal} arm-requests deduped) — ${[...wanted.values()].map((w) => `${w.symbol}@${w.dte}d[${w.window.min}-${w.window.max}]`).join(', ')}`,
     );
 
     const started = Date.now();
     const keys = [...wanted.keys()];
     const settled = await Promise.allSettled(
       keys.map((k) => {
-        const { symbol, dte } = wanted.get(k)!;
-        return this.tastytrade.getGreeksSnapshot(symbol, dte, 25, 8);
+        const { symbol, dte, window } = wanted.get(k)!;
+        return this.tastytrade.getGreeksSnapshot(symbol, dte, 25, 8, window);
       }),
     );
     settled.forEach((r, i) => {
@@ -260,7 +286,7 @@ export class EntryService {
     const slate: SpreadPlan[] = [];
     const misses: string[] = [];
     for (const c of run.candidates) {
-      const snap = snapshots.get(snapKey(c.symbol, params.targetDte));
+      const snap = snapshots.get(snapKey(c.symbol, params));
       if (!snap) {
         misses.push(`${c.symbol}:chain-error`);
         continue;
@@ -283,6 +309,7 @@ export class EntryService {
           `${p.shortStrike}/${p.longStrike}P ${p.expiration} (${p.dte}d) | ` +
           `credit $${round2(p.credit * 100)} risk $${round2(p.riskPerShare * 100)} ` +
           `c/w ${(p.creditToWidth * 100).toFixed(0)}% | delta ${p.shortDelta.toFixed(3)} | ` +
+          `EM ${p.emMultiple ?? '?'}x | ` +
           `IVR ${p.ivRank ?? 'n/a'} | qspread ${(p.avgRelSpread * 100).toFixed(1)}% | ` +
           `parts r/r=${p.scoreParts.creditToWidth.toFixed(2)} d=${p.scoreParts.deltaFit.toFixed(2)} ` +
           `ivr=${p.scoreParts.ivRank.toFixed(2)} liq=${p.scoreParts.liquidity.toFixed(2)}`,
@@ -398,10 +425,9 @@ export class EntryService {
    */
   private scorePlan(p: UnscoredPlan, params: ArmParams): SpreadPlan {
     const parts: ScoreParts = {
-      // 20% of width is an excellent credit at 16-delta with budget-sized width;
-      // measured live, real markets pay 8-20% here. A wider band (0-35%) pinned
-      // every candidate near 0.3 and let the lesser components drive the ranking.
-      creditToWidth: clamp01(p.creditToWidth / 0.2),
+      // Everything on the slate already clears the 25% floor (02 T4), so score
+      // the band above it: 25% = 0, 50% of width (iron-fly territory) = 1.
+      creditToWidth: clamp01((p.creditToWidth - params.minCreditToWidth) / 0.25),
       // Chain granularity means the achieved delta drifts off target. At target
       // = 1.0; off by a full target's worth = 0.
       deltaFit:
@@ -554,6 +580,22 @@ export class EntryService {
   ): UnscoredPlan | null {
     const spot = Number(snap?.underlyingPrice);
     const contracts: any[] = snap?.contracts ?? [];
+    // Spot is the equity NBBO mid. Every downstream number — which strikes are
+    // OTM, the expected-move distance, the width cap — keys off it, so a wide
+    // quote (after-hours, halted, weekend) is disqualifying, not a rounding
+    // error. Liquid ETFs quote a penny wide in RTH; 0.5% is generous.
+    const uBid = Number(snap?.underlyingBid);
+    const uAsk = Number(snap?.underlyingAsk);
+    if (spot && Number.isFinite(uBid) && Number.isFinite(uAsk) && uAsk > 0) {
+      const rel = (uAsk - uBid) / spot;
+      if (rel > MAX_UNDERLYING_QUOTE_REL) {
+        this.logger.warn(
+          `${tag}: ${c.symbol} — underlying quote ${uBid}/${uAsk} is ${(rel * 100).toFixed(1)}% wide; ` +
+            `mid ${spot} is not a usable spot (market closed or halted?). skipping`,
+        );
+        return null;
+      }
+    }
     if (!spot || contracts.length < 2) {
       this.logger.warn(`${tag}: ${c.symbol} — no usable chain snapshot`);
       return null;
@@ -566,6 +608,7 @@ export class EntryService {
         strike: Number(x.strike),
         streamerSymbol: x.put.streamerSymbol as string | undefined,
         delta: Number(x.put.delta),
+        iv: Number(x.put.iv),
         bid: Number(x.put.bid),
         ask: Number(x.put.ask),
       }))
@@ -585,28 +628,95 @@ export class EntryService {
       return null;
     }
 
-    // Short strike: closest |delta| to target.
-    const short = puts.reduce((best, p) =>
-      Math.abs(Math.abs(p.delta) - params.targetDelta) <
-      Math.abs(Math.abs(best.delta) - params.targetDelta)
+    // Short strike selection. Two playbook bands apply at once: |delta| in
+    // [minShortDelta, maxShortDelta] (02 T2) and distance in 1-SD expected
+    // moves to expiry (02 T5: >= 1.0x preferred, 0.8x the hard minimum; EM =
+    // S·σ·√(DTE/365) using each strike's own IV, so skew is respected).
+    // Picking nearest-to-target and then checking EM would reject most chains
+    // — 0.20Δ sits ~0.85 SD out — so filter to strikes that satisfy both,
+    // prefer the >= 1.0x tier, and take the one closest to target within the
+    // tier. That lands on the ~0.16-0.20Δ strike the rules actually want.
+    const dte = Number(snap.dte);
+    const eligible = puts
+      .map((p) => {
+        const absDelta = Math.abs(p.delta);
+        const hasIv = Number.isFinite(p.iv) && p.iv > 0 && dte > 0;
+        const expectedMove = hasIv ? round2(spot * p.iv * Math.sqrt(dte / 365)) : null;
+        const emMultiple =
+          expectedMove && expectedMove > 0 ? round2((spot - p.strike) / expectedMove) : null;
+        return { ...p, absDelta, expectedMove, emMultiple };
+      })
+      .filter((p) => p.absDelta >= params.minShortDelta && p.absDelta <= params.maxShortDelta)
+      // No IV on the leg = cannot verify the EM rule; do not guess, drop it.
+      .filter((p) => p.emMultiple !== null && p.emMultiple >= params.minEmMultiple);
+    const preferred = eligible.filter(
+      (p) => (p.emMultiple as number) >= params.preferredEmMultiple,
+    );
+    const pool = preferred.length ? preferred : eligible;
+
+    if (!pool.length) {
+      const nearest = puts.reduce((best, p) =>
+        Math.abs(Math.abs(p.delta) - params.targetDelta) <
+        Math.abs(Math.abs(best.delta) - params.targetDelta)
+          ? p
+          : best,
+      );
+      const nIv = Number.isFinite(nearest.iv) && nearest.iv > 0 && dte > 0
+        ? round2(spot * nearest.iv * Math.sqrt(dte / 365))
+        : null;
+      this.logger.log(
+        `${tag}: ${c.symbol} — no strike satisfies Δ ${params.minShortDelta}-${params.maxShortDelta} ` +
+          `AND >= ${params.minEmMultiple}x EM (${params.preferredEmMultiple}x preferred); nearest to target is ${nearest.strike}P ` +
+          `(${Math.abs(nearest.delta).toFixed(2)}Δ, ${nIv ? `${round2((spot - nearest.strike) / nIv)}x EM $${nIv}` : 'no IV'}); skipping`,
+      );
+      return null;
+    }
+
+    const short = pool.reduce((best, p) =>
+      Math.abs(p.absDelta - params.targetDelta) < Math.abs(best.absDelta - params.targetDelta)
         ? p
         : best,
     );
+    const shortAbsDelta = short.absDelta;
+    const expectedMove = short.expectedMove;
+    const emMultiple = short.emMultiple;
+    if (!preferred.length) {
+      this.logger.log(
+        `${tag}: ${c.symbol} — no strike in the delta band clears ${params.preferredEmMultiple}x EM; ` +
+          `using ${short.strike}P at ${emMultiple}x (>= ${params.minEmMultiple}x minimum)`,
+      );
+    }
 
-    // Width: risk-budgeted and capped by % of spot. Don't demand an exact strike
-    // — quotes are sparse (thin books, holidays), so take the WIDEST strike that
-    // still fits the budget. Wider = more credit for the same risk ceiling.
-    const maxWidth = Math.min(riskBudget / 100, spot * params.widthPct);
-    const long = puts
-      .filter((p) => p.strike < short.strike)
-      .filter((p) => short.strike - p.strike <= maxWidth)
-      .sort((a, b) => a.strike - b.strike)[0]; // lowest strike = widest spread
+    // Width: risk-budgeted and capped by % of spot. The budget is on RISK,
+    // which is width − credit (01 §4, RULE A8: max_loss = BPR + fees), not on
+    // width — a $2-wide paying $0.78 has $122 of risk and fits a $125 cap
+    // (01 §10's worked example), while a width cap would stop at $1. Walk the
+    // long strikes from widest inward and take the first whose risk fits;
+    // quotes are sparse (thin books, holidays) so don't demand an exact strike.
+    const maxWidth = spot * params.widthPct;
+    const budgetPerShare = (riskBudget - ROUND_TRIP_FEES_2LEG) / 100;
+    const shortMid = (short.bid + short.ask) / 2;
+    const longs = puts
+      .filter((p) => p.strike < short.strike && short.strike - p.strike <= maxWidth)
+      .sort((a, b) => a.strike - b.strike); // lowest strike = widest spread first
+    let long: (typeof puts)[number] | undefined;
+    let tooRich: string | null = null;
+    for (const cand of longs) {
+      const width = short.strike - cand.strike;
+      const credit = shortMid - (cand.bid + cand.ask) / 2;
+      const risk = width - credit;
+      if (risk <= budgetPerShare) {
+        long = cand;
+        break;
+      }
+      tooRich ??= `${short.strike}/${cand.strike}P risks $${round2(risk * 100)}`;
+    }
     if (!long) {
       const nearest = puts.find((p) => p.strike < short.strike);
       this.logger.warn(
-        `${tag}: ${c.symbol} — no long strike within budget ` +
-          `(short ${short.strike}, maxWidth ${round2(maxWidth)}, ` +
-          `nearest below ${nearest ? nearest.strike : 'none'})`,
+        `${tag}: ${c.symbol} — no long strike fits the risk budget ` +
+          `($${round2(riskBudget)} less $${ROUND_TRIP_FEES_2LEG} fees; short ${short.strike}, ` +
+          `${tooRich ?? `nearest below ${nearest ? nearest.strike : 'none'}`})`,
       );
       return null;
     }
@@ -655,10 +765,33 @@ export class EntryService {
       this.logger.warn(`${tag}: ${c.symbol} — non-positive credit, skipping`);
       return null;
     }
+    // Fee gate (01 A6): a $0.20 credit on a $2.50 round trip is 12.5% drag
+    // before the trade has done anything. Gross floor, per share.
+    if (credit < params.minCreditAbs) {
+      this.logger.log(
+        `${tag}: ${c.symbol} — gross credit $${round2(credit)} below $${params.minCreditAbs} ` +
+          `minimum (fee gate); skipping`,
+      );
+      return null;
+    }
+    // Credit/width (02 T4): hard floor, and a target above it. In between is
+    // allowed only when the short strike is far enough out that being paid
+    // less is justified (|Δ| <= thinCreditMaxDelta).
     if (creditToWidth < params.minCreditToWidth) {
       this.logger.log(
         `${tag}: ${c.symbol} — credit/width ${(creditToWidth * 100).toFixed(0)}% ` +
-          `below ${(params.minCreditToWidth * 100).toFixed(0)}%, poor risk/reward — skipping`,
+          `below the ${(params.minCreditToWidth * 100).toFixed(0)}% floor — skipping`,
+      );
+      return null;
+    }
+    if (
+      creditToWidth < params.targetCreditToWidth &&
+      round2(shortAbsDelta) > params.thinCreditMaxDelta
+    ) {
+      this.logger.log(
+        `${tag}: ${c.symbol} — credit/width ${(creditToWidth * 100).toFixed(0)}% is under the ` +
+          `${(params.targetCreditToWidth * 100).toFixed(0)}% target and short Δ ${shortAbsDelta.toFixed(2)} ` +
+          `> ${params.thinCreditMaxDelta} (thin credit needs a further strike) — skipping`,
       );
       return null;
     }
@@ -667,13 +800,15 @@ export class EntryService {
       symbol: c.symbol,
       correlationGroup: c.correlationGroup,
       expiration: String(snap.expiration),
-      dte: Number(snap.dte),
+      dte,
       underlyingPrice: spot,
       shortStrike: short.strike,
       longStrike: long.strike,
       shortStreamerSymbol: short.streamerSymbol,
       longStreamerSymbol: long.streamerSymbol,
       shortDelta: short.delta,
+      expectedMove,
+      emMultiple,
       width: actualWidth,
       credit,
       riskPerShare: round2(actualWidth - credit),
@@ -686,8 +821,11 @@ export class EntryService {
   }
 }
 
-function snapKey(symbol: string, dte: number): string {
-  return `${symbol}@${dte}`;
+function snapKey(
+  symbol: string,
+  p: { targetDte: number; minDte: number; maxDte: number },
+): string {
+  return `${symbol}@${p.targetDte}[${p.minDte}-${p.maxDte}]`;
 }
 function etDate(d: Date): string {
   return new Intl.DateTimeFormat('en-CA', {

@@ -135,8 +135,12 @@ export interface PositionValuation {
   symbol: string;
   strategy: string;
   expiration: string;
-  /** Calendar days to expiration — drives the 21-DTE management rule. */
+  /** Calendar days to expiration — drives the time-stop rule. */
   dte: number | null;
+  /** When the position was opened (ISO). */
+  openedAt: string;
+  /** Calendar DTE on the day it was opened — tells a 45-DTE legacy position from a 7-14 DTE one. */
+  dteAtOpen: number | null;
   quantity: number;
   entryCredit: number;
   /** Per-share cost to close now. Null when a leg could not be quoted. */

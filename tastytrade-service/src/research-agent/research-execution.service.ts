@@ -35,6 +35,9 @@ export class ResearchExecutionService {
   private readonly logger = new Logger(ResearchExecutionService.name);
 
   private readonly requireDryRun: boolean;
+  /** Playbook DTE window at entry (02 T27: never < 5; 7-14 is the mandate). */
+  private readonly minDte: number;
+  private readonly maxDte: number;
 
   constructor(
     private readonly paper: PaperService,
@@ -53,6 +56,8 @@ export class ResearchExecutionService {
     // is funded to at least the arm's size.
     this.requireDryRun =
       String(config.get('RESEARCH_REQUIRE_DRY_RUN') ?? 'false') === 'true';
+    this.minDte = Number(config.get('RESEARCH_MIN_DTE') ?? 7);
+    this.maxDte = Number(config.get('RESEARCH_MAX_DTE') ?? 14);
   }
 
   async submit(
@@ -119,6 +124,18 @@ export class ResearchExecutionService {
       const frontExpiration = [...play.legs]
         .map((l) => l.expiration)
         .sort()[0];
+
+      // The DTE mandate is enforced here, not trusted from the prompt. The
+      // front leg is what the time stop keys on, so it is what must sit inside
+      // the window.
+      const dte = calendarDte(frontExpiration);
+      if (dte === null || dte < this.minDte || dte > this.maxDte) {
+        await reject(
+          `front expiration ${frontExpiration} is ${dte ?? '?'} DTE, outside the ` +
+            `${this.minDte}-${this.maxDte} DTE mandate`,
+        );
+        continue;
+      }
 
       try {
         const position = await this.paper.openFromSuggestion({
@@ -207,4 +224,11 @@ const STRUCTURE_MAP: Record<string, StrategyType> = {
 
 function round4(n: number): number {
   return Math.round(n * 10000) / 10000;
+}
+
+/** Calendar days from now to a YYYY-MM-DD expiration (~16:00 ET close). */
+function calendarDte(expiration: string): number | null {
+  const exp = Date.parse(`${expiration}T20:00:00Z`);
+  if (Number.isNaN(exp)) return null;
+  return Math.round((exp - Date.now()) / 86_400_000);
 }

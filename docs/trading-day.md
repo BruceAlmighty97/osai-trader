@@ -1,31 +1,38 @@
 # The Trading Day (Session Orchestration)
 
 How the bot runs its day. Grounded in how real options premium-sellers structure
-their time (see Sources) and adapted for our strategy: **45-DTE credit spreads on
-ETFs, managed at 50% profit / 21 DTE.** Because these are swing positions (not
-0DTE), intraday timing matters for **fill quality and entry edge**, not because
-anything expires today — so the cadence is lean.
+their time (see Sources) and adapted for our strategy: the **7–14 DTE
+defined-risk playbook** in [`docs/playbook/`](playbook/00-README.md), managed at
+50 % profit / 2× credit stop / two trading days before expiry. At this tenor
+intraday timing matters for both fill quality **and** risk — gamma is large and
+a position can go from winner to stop in a session — so the manage cadence
+matters more than it did at 45 DTE (see "What the playbook still needs from the
+schedule" below).
+
+> **Historical note.** Until 2026-09-13 this book ran 45-DTE spreads at 25 % of
+> NLV per position, four positions, fully deployed. Sections below that
+> describe the sizing rationale have been rewritten; the A/B-arm machinery,
+> mark-to-market and scheduling are unchanged.
 
 ## Position sizing (drives everything else)
 
-**4 concurrent positions at 25% risk each — fully deployed.** On the $2,500 paper
-account that's **~$625 of defined risk per position**. This is deliberately
-aggressive: the account is meant to be working at all times, with no dry powder.
+**Playbook RULES S1–S5** (`01-account-and-capital-rules.md §5`): max loss per
+position **5 % of NLV** ($125 on $2,500 including fees), total risk in use
+**30 %**, **5** positions, **1 per underlying**, **2 per correlated group**, one
+contract per leg. Seeded into `risk_config` by migration `1788720000000`.
 
 Two consequences worth internalizing:
 
-1. **It sets the tradeable universe.** Spread risk = `width × 100 × contracts`, so
-   ~$625 buys a **5-wide spread in a single contract**. That makes the penny-wide
-   index ETFs (SPY/QQQ/IWM) the best execution — ~$2 of commissions. A $40 ETF
-   would need 6+ contracts for the same risk and **6× the commissions**, so cheap
-   underlyings are actively worse at this size. (At 5% risk the logic inverts —
-   you'd be stuck in 1-wide spreads where only cheap underlyings give real credit.)
-2. **Correlation becomes the real risk, not per-trade size.** Four positions that
-   are secretly one bet all hit max loss on a single move. SPY/QQQ/IWM are one
-   bet. That's why every watchlist row carries a **`correlationGroup`**
-   (`us_equity`, `precious_metals`, `rates`, `energy`) and the gate enforces
-   **`maxPerCorrelationGroup: 1`**; `maxPerUnderlying: 1` alone wouldn't stop
-   three correlated index spreads.
+1. **It sets the tradeable universe.** Spread risk = `(width − credit) × 100`, so
+   $125 buys a **$1-wide spread on SPY, $2-wide only if it pays ≥ $0.78**. The
+   credit floor (25 % of width) and the $0.30 gross minimum then decide whether
+   the trade exists at all — many days it will not. Cheap underlyings are not a
+   way around this: a $40 ETF's $1-wide spread has the same dollar risk with a
+   thinner market.
+2. **Correlation is still the real risk.** SPY/XSP/QQQ/XND/IWM are one bet in a
+   selloff. Every watchlist row carries a **`correlationGroup`** and the gate
+   enforces **`maxPerCorrelationGroup: 2`** (playbook S5); `maxPerUnderlying: 1`
+   alone wouldn't stop three correlated index spreads.
 
 ### ETF groups are tight; single stocks are intentionally ungrouped
 
@@ -62,9 +69,10 @@ seams:
 - **Entry** — a read-only tool-using analyst decides *what/if/when* to open across
   the watchlist (it can pass); `RiskService.check()` still gates it and code still
   records it. The AI never gets an open/close tool.
-- **Exit judgment** — at decision points only (50% profit, ~21 DTE) the AI weighs
-  close/hold/roll from a code-sanctioned set. Hard stops (2× credit, assignment)
-  are non-negotiable code closes.
+- **Exit judgment** — at decision points only (50% profit) the AI could weigh
+  close/hold from a code-sanctioned set. Hard stops (2× credit, delta, touch,
+  the time stop) are non-negotiable code closes, and rolling is not permitted
+  at ≤ 14 DTE (playbook 02 T9).
 
 Deterministic-first preserves the agentic option; the reverse doesn't.
 
@@ -201,10 +209,26 @@ the position is currently worth.
   highest-value timing rules in the research.
 - **Primary entries 10:00–11:30**; midday is manage-only; optional afternoon entry
   with a **hard ~14:45 cutoff** on new opens.
-- **Manage on 50% profit / 21 DTE**, whichever first (tastytrade's 200k-trade
-  result). Power hour = harvest winners.
-- **Exclude earnings names** in pre-market; **gate candidates on IV Rank** (>50%
-  ideal for premium selling).
+- **Manage on 50% profit / 2× credit stop / two trading days before expiry**,
+  whichever first (playbook 02 §10). Power hour = harvest winners and run the
+  time stop.
+- **Exclude earnings names** in pre-market; **gate candidates on IV Rank ≥ 30**
+  (playbook adds IV percentile ≥ 50 and VRP ≥ 3 — stage 3).
+
+## What the playbook still needs from the schedule
+
+The phases above are the 45-DTE cadence. The playbook (06 §1.2, §5.2) wants:
+
+- **Stop checks every tick 09:30–16:00**, not just at 12:30 and power hour — a
+  tested 7-DTE spread can pass its 2× stop and keep going inside an hour.
+- **Entries allowed 10:00–15:30** (last accepted 15:30), with 10:05 / 10:15 /
+  10:30 starts on 10:00-release, VIX-expiry and post-quarterly-opex days, and
+  a 15:45–16:00 hard no-trade zone.
+- Pre-market (08:00) and post-market (16:15) **checklists** — gap classification
+  vs expected move, `close_at_open` list, VIX daily-change regime flag.
+
+That requires the dispatcher to run more than one phase per tick (manage first,
+then entry). It lands with the stage-1 exit engine.
 
 ## Polling ≠ over-trading
 

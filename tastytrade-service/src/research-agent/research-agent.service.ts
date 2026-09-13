@@ -121,7 +121,9 @@ export class ResearchAgentService implements OnModuleInit {
     const arm = req.arm ?? this.defaultArm;
     const summary = await this.paper.getSummary(arm);
     const bpLimit = req.buyingPowerLimit ?? summary.buyingPowerAvailable;
-    const holdingDays = req.holdingDays ?? 4;
+    // Playbook: open at 7-14 DTE, out two trading days before expiry — so a
+    // 10-DTE entry has ~6 trading days of life. 5 is the default window.
+    const holdingDays = req.holdingDays ?? 5;
     const objective =
       req.objective ??
       `Up to 3 high-probability defined-risk plays for the next ${holdingDays} trading days.`;
@@ -279,7 +281,7 @@ export class ResearchAgentService implements OnModuleInit {
     return [
       `Objective: ${p.objective}`,
       `Paper arm: "${p.arm}". Buying power available for these plays: $${p.bpLimit}.`,
-      `Holding window: ${p.holdingDays} trading days. Current time: ${new Date().toISOString()}.`,
+      `Holding window: ${p.holdingDays} trading days (expirations must be 7-14 DTE; positions are force-closed two trading days before expiry). Current time: ${new Date().toISOString()}.`,
       p.watchlist?.length
         ? `Seed names (do your own discovery too): ${p.watchlist.join(', ')}`
         : '',

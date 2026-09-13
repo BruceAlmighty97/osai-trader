@@ -120,6 +120,15 @@ http://localhost:3000/swagger
 - `.github/workflows/deploy.yml` — build → push ECR → roll ECS; needs repo variable `AWS_DEPLOY_ROLE_ARN` after first `cdk deploy`
 - Full runbook + gotchas: `docs/aws-infrastructure.md`
 
+## Strategy (2026-09-13 pivot)
+
+The bot trades the **7–14 DTE defined-risk playbook** in `docs/playbook/`
+(`00-README.md` has the canonical rule table — it is authoritative over every
+other doc and over the code). `docs/strategy-methodology.md` maps each rule to
+where it is enforced and which stages are still unbuilt (exit engine, event
+calendar, regime gate, kill switches, more structures, index products).
+The 45-DTE methodology is retired; positions opened under it exit at 21 DTE.
+
 ## Coding Guidelines
 
 ### Logging — log everything

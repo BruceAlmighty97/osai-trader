@@ -201,6 +201,8 @@ export class MarkToMarketService {
     }
 
     const dte = dteFrom(p.expiration);
+    const openedAt = new Date(p.openedAt);
+    const dteAtOpen = dteFrom(p.expiration, openedAt.getTime());
 
     if (!priced) {
       return {
@@ -210,6 +212,8 @@ export class MarkToMarketService {
         strategy: p.strategy,
         expiration: p.expiration,
         dte,
+        openedAt: openedAt.toISOString(),
+        dteAtOpen,
         quantity: qty,
         entryCredit: round2(entryCredit),
         currentDebit: null,
@@ -271,6 +275,8 @@ export class MarkToMarketService {
         strategy: p.strategy,
         expiration: p.expiration,
         dte,
+        openedAt: openedAt.toISOString(),
+        dteAtOpen,
         quantity: qty,
         entryCredit: round2(entryCredit),
         currentDebit: null,
@@ -288,6 +294,8 @@ export class MarkToMarketService {
       strategy: p.strategy,
       expiration: p.expiration,
       dte,
+      openedAt: openedAt.toISOString(),
+      dteAtOpen,
       quantity: qty,
       entryCredit: round2(entryCredit),
       currentDebit: round2(currentDebit),
@@ -306,10 +314,10 @@ export class MarkToMarketService {
   }
 
 }
-function dteFrom(expiration: string): number | null {
+function dteFrom(expiration: string, asOf = Date.now()): number | null {
   const exp = Date.parse(`${expiration}T20:00:00Z`); // ~16:00 ET
-  if (Number.isNaN(exp)) return null;
-  return Math.round((exp - Date.now()) / 86_400_000);
+  if (Number.isNaN(exp) || Number.isNaN(asOf)) return null;
+  return Math.round((exp - asOf) / 86_400_000);
 }
 function num(v: unknown): number {
   const n = typeof v === 'number' ? v : parseFloat(String(v ?? 0));

@@ -321,6 +321,13 @@ export class TastytradeService implements OnModuleInit {
     dte = 35,
     strikesPerSide = 8,
     seconds = 7,
+    /**
+     * Optional acceptance window on days-to-expiration. When given, only
+     * expirations inside [min, max] are considered (nearest to `dte` wins);
+     * a chain with nothing in the window throws rather than silently
+     * returning a 3-DTE or 24-DTE expiry for a 7-14 DTE mandate.
+     */
+    dteWindow?: { min: number; max: number },
   ): Promise<Record<string, unknown>> {
     await this.ensureLogin();
     const sym = symbol.toUpperCase();
@@ -328,7 +335,13 @@ export class TastytradeService implements OnModuleInit {
     const root = Array.isArray(chain)
       ? chain[0]
       : (chain?.items?.[0] ?? chain?.data?.items?.[0]);
-    const expirations = root?.expirations ?? [];
+    const all: any[] = root?.expirations ?? [];
+    const expirations = dteWindow
+      ? all.filter((e) => {
+          const d = Number(e['days-to-expiration']);
+          return d >= dteWindow.min && d <= dteWindow.max;
+        })
+      : all;
     const exp = expirations.reduce(
       (best: any, e: any) =>
         !best ||
@@ -338,7 +351,14 @@ export class TastytradeService implements OnModuleInit {
           : best,
       null,
     );
-    if (!exp) throw new Error(`No expirations available for ${sym}`);
+    if (!exp) {
+      const listed = all.map((e) => e['days-to-expiration']).join(',');
+      throw new Error(
+        dteWindow
+          ? `No expiration for ${sym} inside ${dteWindow.min}-${dteWindow.max} DTE (listed: ${listed || 'none'})`
+          : `No expirations available for ${sym}`,
+      );
+    }
 
     const strikes = [...(exp.strikes ?? [])].sort(
       (a: any, b: any) =>
@@ -414,6 +434,10 @@ export class TastytradeService implements OnModuleInit {
     return {
       symbol: root?.['underlying-symbol'] ?? sym,
       underlyingPrice: round(underlyingPrice),
+      // Exposed so callers can judge the mid. Outside RTH the equity NBBO can
+      // be dollars wide and the mid lands nowhere near the last trade.
+      underlyingBid: u?.bid ?? null,
+      underlyingAsk: u?.ask ?? null,
       expiration: exp['expiration-date'],
       dte: exp['days-to-expiration'],
       contracts,
