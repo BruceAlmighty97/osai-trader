@@ -13,6 +13,7 @@ import { PaperModule } from '../paper/paper.module';
 import { TastytradeModule } from '../tastytrade/tastytrade.module';
 import { FinnhubModule } from '../finnhub/finnhub.module';
 import { OrchestratorModule } from '../orchestrator/orchestrator.module';
+import { SocialModule } from '../social/social.module';
 
 /**
  * The agentic arm — web research + live broker data + Claude, trading into its
@@ -31,6 +32,7 @@ import { OrchestratorModule } from '../orchestrator/orchestrator.module';
     OrchestratorModule,
     TastytradeModule,
     FinnhubModule,
+    SocialModule,
   ],
   controllers: [ResearchAgentController],
   providers: [

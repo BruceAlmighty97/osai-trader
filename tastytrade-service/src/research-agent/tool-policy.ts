@@ -52,6 +52,7 @@ export const OWN_TOOLS = [
   'spread_math',
   'paper_positions',
   'holding_window',
+  'reddit_buzz',
 ].map((t) => `${OWN}${t}`);
 
 export const ALLOWED_TOOLS = [

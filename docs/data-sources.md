@@ -12,7 +12,7 @@ and the **entry analyst**. Researched 2026-09-06. Paid services are acceptable.
 | **Earnings calendar** (universe sweep) | Exclude names reporting before selling premium | ❌ **gap** (tastytrade only gives a per-symbol flag) |
 | **Economic calendar** (Fed / CPI / FOMC) | Pre-market "is today a big-event day?" | ❌ **gap** |
 | **News / catalysts** | Pre-market context, single-name vetting | ❌ **gap** |
-| **Sentiment** (social/news) | "Unusual attention / crowd lean" input | ⚠️ StockTwits works; Reddit dead |
+| **Sentiment** (social/news) | "Unusual attention / crowd lean" input | ⚠️ StockTwits (lean) + ApeWisdom (Reddit mention counts) |
 | Options analytics / backtesting | Validate the strategy, single-name edge | ❌ (deferred, for funding time) |
 
 ## What we already have (the base)
@@ -28,10 +28,29 @@ and the **entry analyst**. Researched 2026-09-06. Paid services are acceptable.
   fragility that killed Reddit — works now, could change.
 - **Claude** — already paid for; the reasoning engine.
 
-> **Reddit is dead as a source.** Its public `.json` endpoints now 403 even from a
-> residential IP with a browser User-Agent — a blanket block, not a bug. The
-> Reddit scanner is being retired in favor of StockTwits. See git history for the
-> `social/reddit.client.ts` implementation if ever needed.
+- **ApeWisdom** — Reddit **mention counts** per ticker (WSB / stocks / options /
+  …), keyless, no login: `GET apewisdom.io/api/v1.0/filter/{all-stocks|wallstreetbets|…}`.
+  Rolling-24h count + 24h-ago baseline + rank. Counts only, no bull/bear — the
+  direction still comes from StockTwits. Wired as `social/apewisdom.client.ts`:
+  top-N joins pre-market discovery, survivors get `redditMentions`, the research
+  agent has a `reddit_buzz` tool, and `GET /social/reddit-trending` exposes it.
+  Cached 5 min in-process so all readers share one snapshot.
+
+> **Reddit direct is dead as a source.** Its public `.json` endpoints now 403 even
+> from a residential IP with a browser User-Agent — a blanket block, not a bug.
+> The original Reddit scanner was retired for StockTwits; ApeWisdom (above) now
+> covers the Reddit-attention signal. See git history for `social/reddit.client.ts`.
+>
+> **Evaluated and rejected (2026-09-13): Agent Reach** (github.com/Panniantong/Agent-Reach).
+> Pitched as agent access to Reddit et al., but its Reddit channel is `rdt-cli`,
+> which works by borrowing a logged-in account's **browser cookies** — the docs
+> say to use a throwaway because of ban risk, to hand-export cookies for headless
+> servers, and to buy residential proxies when the server IP gets rate-limited.
+> That is the same fragility that killed the original scanner plus cookie
+> rotation and an account on the line, on a bot that runs unattended. Also a
+> Python/pipx + Node + `gh` CLI aimed at desktop agents and Chinese platforms, not
+> a server data pipeline. If we ever want post-level Reddit data, the right route
+> is the official Data API with a registered "script" app (OAuth2, 100 req/min).
 
 ## The tool landscape
 
@@ -69,7 +88,7 @@ and the **entry analyst**. Researched 2026-09-06. Paid services are acceptable.
 | **StockGeist.ai** | Social + news, emotion vs. informative split, SSE stream | Free 10k credits; $75 pack | Real-time-ish, novel emotion breakdown |
 | **Marketaux** | News, 80+ markets, 200k entities | Free (3/req); $29/mo | Entity-level normalized scores |
 | **Finnhub social** | Reddit/Twitter aggregated | Plan-gated | Bundled if you go Finnhub |
-| **ApeWisdom** | Reddit/WSB + 4chan | Free, no key | **Mention counts, not sentiment scores** |
+| **ApeWisdom** (have) | Reddit/WSB + 4chan | Free, no key | **Mention counts, not sentiment scores** — wired 2026-09-13 |
 | **RavenPack / Bigdata.com** | News+social, 40k sources, history to 2000 | Enterprise (~$0.0075/unit) | Institutional gold standard — out of scope |
 | **Social Market Analytics** | Social S-Score, sub-second | Quote-only | Institutional, inaccessible self-serve |
 | **Utradea** | X + StockTwits + Reddit | $22.95/mo | ⚠️ shows signs of being **unmaintained** |

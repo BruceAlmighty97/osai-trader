@@ -19,6 +19,9 @@ export interface ShortlistCandidate {
   /** StockTwits crowd lean (survivors only — expensive data goes last). */
   bullish: number | null;
   bearish: number | null;
+  /** Reddit mention count (ApeWisdom aggregate) and its 24h baseline; null = not in the top list. */
+  redditMentions?: number | null;
+  redditMentions24hAgo?: number | null;
 }
 
 /**

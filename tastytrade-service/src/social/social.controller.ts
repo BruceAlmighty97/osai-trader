@@ -6,11 +6,15 @@ import {
   TrendingRow,
 } from './social.service';
 import { SocialMentionEntity } from './social-mention.entity';
+import { ApeWisdomClient, RedditBuzzRow } from './apewisdom.client';
 
 @ApiTags('social')
 @Controller('social')
 export class SocialController {
-  constructor(private readonly social: SocialService) {}
+  constructor(
+    private readonly social: SocialService,
+    private readonly apewisdom: ApeWisdomClient,
+  ) {}
 
   /**
    * Pull StockTwits messages now and store ticker mentions (with sentiment).
@@ -69,5 +73,25 @@ export class SocialController {
       windowHours ? parseInt(windowHours, 10) : undefined,
       limit ? parseInt(limit, 10) : undefined,
     );
+  }
+
+  @Get('reddit-trending')
+  @ApiOperation({
+    summary:
+      'Top tickers by Reddit mention count (ApeWisdom aggregate), with 24h change',
+  })
+  @ApiQuery({
+    name: 'filter',
+    required: false,
+    example: 'all-stocks',
+    description: 'all-stocks | all | wallstreetbets | stocks | options | ...',
+  })
+  @ApiQuery({ name: 'limit', required: false, example: '25' })
+  async redditTrending(
+    @Query('filter') filter?: string,
+    @Query('limit') limit?: string,
+  ): Promise<RedditBuzzRow[]> {
+    const rows = await this.apewisdom.getTrending(filter || undefined);
+    return rows.slice(0, Math.min(limit ? parseInt(limit, 10) : 25, 100));
   }
 }

@@ -7,6 +7,7 @@ import { WatchlistEntity } from '../persistence/entities/watchlist.entity';
 import { PaperService } from '../paper/paper.service';
 import { MarketCalendarService } from '../orchestrator/market-calendar.service';
 import { PositionStatus } from '../persistence/persistence.types';
+import { ApeWisdomClient } from '../social/apewisdom.client';
 import { buildOccSymbol } from './occ';
 import {
   CORE_ETFS,
@@ -38,6 +39,7 @@ export class ResearchAgentTools {
     private readonly watchlist: Repository<WatchlistEntity>,
     private readonly paper: PaperService,
     private readonly calendar: MarketCalendarService,
+    private readonly apewisdom: ApeWisdomClient,
   ) {}
 
   /** Built per run so the arm name can be closed over. */
@@ -155,6 +157,41 @@ export class ResearchAgentTools {
               })),
               note: 'A deterministic risk gate runs AFTER you: max positions, per-underlying and per-correlation-group caps. Do not attempt to enforce them yourself, but do not propose a play whose maxLoss exceeds maxRiskPerTradeUsd — it will be rejected.',
             });
+          },
+        ),
+
+        tool(
+          'reddit_buzz',
+          'Reddit attention by ticker (ApeWisdom aggregate over WSB/stocks/options etc.): mention count, 24h change and rank. Mention COUNTS only — no bull/bear lean. Pass symbols to look up specific names, or omit for the top list. A >100% 24h spike is a flag to INVESTIGATE, never a signal on its own.',
+          {
+            symbols: z
+              .array(z.string())
+              .max(100)
+              .optional()
+              .describe('Look up these; omit for the top list'),
+            limit: z.number().int().positive().max(100).default(25),
+            filter: z
+              .enum(['all-stocks', 'all', 'wallstreetbets', 'stocks', 'options'])
+              .default('all-stocks'),
+          },
+          async ({ symbols, limit, filter }) => {
+            const started = Date.now();
+            if (symbols?.length) {
+              const found = await this.apewisdom.lookup(symbols, filter, 2);
+              const rows = symbols.map((s) => {
+                const r = found.get(s.toUpperCase());
+                return r ?? { symbol: s.toUpperCase(), mentions: 0, note: 'not in top 200' };
+              });
+              this.logger.log(
+                `tool reddit_buzz(${symbols.length} symbols, ${filter}) -> ${found.size} found in ${Date.now() - started}ms`,
+              );
+              return ok({ filter, window: 'rolling 24h', rows });
+            }
+            const rows = (await this.apewisdom.getTrending(filter)).slice(0, limit);
+            this.logger.log(
+              `tool reddit_buzz(top ${limit}, ${filter}) -> ${rows.length} rows in ${Date.now() - started}ms`,
+            );
+            return ok({ filter, window: 'rolling 24h', rows });
           },
         ),
 
