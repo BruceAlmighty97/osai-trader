@@ -29,7 +29,7 @@ Design notes:
 >
 > **UPDATE (2026-09-06): scheduling is now in-process, not EventBridge.** Because
 > the service stays always-on to serve the API, the trading-day scheduler runs
-> inside it via `@nestjs/schedule` (a 15-min market-hours tick → dispatcher), so
+> inside it via `@nestjs/schedule` (a 5-min tick → dispatcher), so
 > no EventBridge/RunTask is needed. See `docs/trading-day.md`. The
 > EventBridge → RunTask design below is retained only as the path IF we later
 > scale the service to 0 to go fully serverless — the dispatcher code is identical,

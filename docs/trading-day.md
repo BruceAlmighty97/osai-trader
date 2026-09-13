@@ -78,20 +78,21 @@ Deterministic-first preserves the agentic option; the reverse doesn't.
 
 ## The day — phases + cadence (all times ET, DST-aware)
 
+The heartbeat ticks **every 5 minutes**. A tick runs *every* window it falls
+inside, in schedule order — MANAGE before ENTRY, so a stop that fires frees
+buying power for the same tick's entry.
+
 | Phase | Window | Cadence | Job | AI |
 |---|---|---|---|---|
-| **Pre-market prep** | 08:00 | once | Earnings/econ calendar (exclude reporters), overnight gaps, IV rank per symbol, social trending, BP/positions → candidate shortlist + morning brief (persisted) | brief |
-| *(skip the open)* | 09:30–10:00 | — | Nothing — widest spreads, worst fills | — |
-| **Morning entry** | 10:00–11:30 | **every 15 min** (~7) | Entry analyst: open best play or pass → gate → record | analyst |
-| **Midday manage** | 12:30 | once | Exit rules + AI exit judgment. No new entries (midday = wide spreads, low premium) | exits |
-| **Afternoon entry** *(optional)* | 14:00–14:30 | **2 checks** | Second look if BP free + strong setup. **Hard stop: no opens after 14:45** | analyst |
-| **Power-hour manage** | 15:00–15:45 | **every 15 min** (~4) | Harvest winners (remove gamma). **No new opens.** Respect 15:45 cutoff | exits |
-| **After-close review** | 16:15 | once | Journal each decision (plan vs outcome), day P&L / W-L, note tomorrow | summary |
+| **Pre-market prep** | 08:00 | once | Earnings/econ calendar (exclude reporters), IV rank per symbol, StockTwits + Reddit attention, BP/positions → candidate shortlist (persisted) | — |
+| *(skip the open)* | 09:30–09:35 | — | Nothing — widest spreads, worst fills | — |
+| **Manage** | 09:35–15:55 | **every 5 min** | Value every open position; fire stops (loss / touch / delta), profit target, time exit. Playbook 06 §5.2 wants stops "every 5 minutes 09:30–16:00" | — |
+| **Entry** | 10:00–15:30 | **every 15 min** (quarter-hours) | Each arm opens its best play or passes → gate → record. Last entry accepted 15:30; never 15:45–16:00 | analyst (ai arm) |
+| **After-close review** | 16:15 | once | Journal each decision (plan vs outcome), day P&L / W-L | summary |
 
-The **5 core phases are implemented** in `PHASE_SCHEDULE` (prep, morning entry,
-midday manage, power-hour manage, review) — dispatching correctly, with handlers
-still stubbed. The **afternoon entry is deliberately omitted** until the core loop
-is proven; adding it back is one row in the schedule.
+Half-days shift MANAGE, ENTRY and the review 3h earlier (13:00 close).
+Release-day entry offsets (10:05 / 10:15 / 10:30 — playbook 07 R5) land with
+the event calendar.
 
 ## Entry: how one play gets chosen
 
@@ -101,7 +102,7 @@ thing doing arithmetic.
 **Stage 1 — build a slate (always mechanical).** Take the top `ENTRY_SLATE_SIZE`
 (5) candidates off the pre-market shortlist, skipping symbols already held, and
 price them **in parallel**. Each is an ~8s DXLink chain snapshot, so five
-sequentially would burn 40s of a 15-minute tick — parallel makes it ~9s, which is
+sequentially would burn 40s of a 15-minute entry cadence — parallel makes it ~9s, which is
 what makes best-of affordable at all. For each: short strike = OTM put nearest
 `ENTRY_TARGET_DELTA`, long strike = widest that fits the risk budget, both legs
 priced at the mid, then rejected if the quote is stale/wide, the credit is
@@ -207,30 +208,36 @@ the position is currently worth.
 
 ## Rules baked into the schedule
 
-- **Never open in the first 30 min or the last hour** (fills + gamma) — the
-  highest-value timing rules in the research.
-- **Primary entries 10:00–11:30**; midday is manage-only; optional afternoon entry
-  with a **hard ~14:45 cutoff** on new opens.
-- **Manage on 50% profit / 2× credit stop / two trading days before expiry**,
-  whichever first (playbook 02 §10). Power hour = harvest winners and run the
-  time stop.
+- **Never open in the first 30 min or after 15:30** (fills + the closing
+  auction) — playbook 06 §1.2.
+- **Entries 10:00–15:30 on quarter-hours**; manage runs every 5 minutes
+  alongside.
+- **Manage on 50% profit / 1× credit loss / delta / touch / two trading days
+  before expiry**, whichever first (playbook 02 §10), every 5 minutes.
 - **Exclude earnings names** in pre-market; **gate candidates on IV Rank ≥ 30**
   (playbook adds IV percentile ≥ 50 and VRP ≥ 3 — stage 3).
 
-## What the playbook still needs from the schedule
+## Exit engine (stage 1, 2026-09-13)
 
-The phases above are the 45-DTE cadence. The playbook (06 §1.2, §5.2) wants:
+`trading/exit-rules.ts` is a pure function over a valued position — no clock,
+no I/O — so the policy is tested against synthetic books (26 cases in the
+scratch suite, including holiday arithmetic). Firing order is the priority and
+is what gets journaled as `exitReason`:
 
-- **Stop checks every tick 09:30–16:00**, not just at 12:30 and power hour — a
-  tested 7-DTE spread can pass its 2× stop and keep going inside an hour.
-- **Entries allowed 10:00–15:30** (last accepted 15:30), with 10:05 / 10:15 /
-  10:30 starts on 10:00-release, VIX-expiry and post-quarterly-opex days, and
-  a 15:45–16:00 hard no-trade zone.
-- Pre-market (08:00) and post-market (16:15) **checklists** — gap classification
-  vs expected move, `close_at_open` list, VIX daily-change regime flag.
+1. `expired` — expiration reached with the position open (a missed exit, logged as such)
+2. `stop_loss` — unrealized loss ≥ 1 × max profit (= "mark ≥ 2× credit"), capped at 0.5 × max risk (rich-credit / debit variant)
+3. `stop_touch` — underlying printed at/through a short strike today (dxfeed Summary range, only when its `dayId` is today; plus last trade / mid)
+4. `stop_delta` — short |Δ| ≥ 0.40 (0.35 condors); debit spreads: long |Δ| ≤ 0.20
+5. `profit_target` — 50 %, or 25 % at ≤ 3 DTE and always for iron flies
+6. `time_exit` — from 10:00 on the session two trading days before expiry (holidays skipped); immediately if missed. Legacy 45-DTE positions: `dte_roll` at 21 DTE
 
-That requires the dispatcher to run more than one phase per tick (manage first,
-then entry). It lands with the stage-1 exit engine.
+Mark-to-market carries what the rules need: per-leg delta (Greeks), the
+underlying's NBBO mid (rejected when > 0.5 % wide), last trade, and today's
+session range — all in the one batched DXLink session per tick.
+
+Still to come from the playbook's schedule: pre-market (08:00) and post-market
+(16:15) **checklists** — gap classification vs expected move, `close_at_open`
+list, VIX daily-change regime flag (stage 7).
 
 ## Polling ≠ over-trading
 
@@ -247,7 +254,7 @@ EventBridge, no RunTask, no HTTP ingress, no ALB:
 
 ```ts
 // orchestrator.service.ts — a deliberately dumb, frequent tick
-@Cron('0 */15 * * * *', { name: 'osai-tick' })
+@Cron('0 */5 * * * *', { name: 'osai-tick' })
 tick(): void { this.runEventLoop(); }
 ```
 
@@ -265,7 +272,7 @@ outside regular market hours, so a market-hours cron would silently skip them.
 > **Where the config lives:** phase windows are in code today
 > (`orchestrator.types.ts` → `PHASE_SCHEDULE`), so changing a time needs a deploy.
 > A single-point window (`startMin === endMin`) fires once; a range fires on every
-> 15-min tick inside it. Moving this to DB-backed config with a GET/PATCH endpoint
+> tick inside it (a window with `everyMinutes: 15` only on quarter-hours). Moving this to DB-backed config with a GET/PATCH endpoint
 > (like `/risk/config`) is deferred until the phases settle.
 
 **Why not EventBridge → RunTask:** that only wins if we scale the service to 0 to
@@ -277,20 +284,17 @@ only the trigger swaps — so this choice isn't a dead end. See
 ## Build order & status
 
 **Done**
-1. ✅ 15-min heartbeat (`@nestjs/schedule`) + `runEventLoop()` entry point.
+1. ✅ 5-min heartbeat (`@nestjs/schedule`) + `runEventLoop()` entry point.
 2. ✅ Computed NYSE `MarketCalendarService` (trading days + 1pm early closes),
    verified against the official 2025–2027 calendar.
-3. ✅ Phase dispatcher — calendar gate + ET-time→phase mapping + early-close shift.
-   **Phase handlers are stubs** that just log.
+3. ✅ Phase dispatcher — calendar gate + ET-time→phases mapping (several per
+   tick, manage before entry) + early-close shift.
 
-**Next**
-4. **Mark-to-market** — re-quote open legs → live unrealized P&L. Unblocks MANAGE.
-5. **Mechanical entry** — deterministic discover → qualify → strike selection →
-   risk gate → paper ledger. A complete working loop with no AI.
-6. **Earnings calendar** (Finnhub) — the gate that safely opens the single-name lane.
-7. **Exit engine** — deterministic classifier (50% profit / 21 DTE / 2× stop).
-8. **`trading_day` context record** — carries the pre-market shortlist across phases
-   (each phase is a separate tick, so shared state goes through the DB).
+4. ✅ **Mark-to-market** — batched re-quote of every leg + underlying (mids, deltas, session range).
+5. ✅ **Mechanical entry** — discover → qualify → strike selection → risk gate → paper ledger.
+6. ✅ **Earnings calendar** (Finnhub) — hard exclude in pre-market.
+7. ✅ **Exit engine** — `exit-rules.ts` (stops: loss / touch / delta; profit; calendar-aware time exit).
+8. ✅ **`trading_day` context record** — carries the pre-market shortlist across phases.
 
 9. ~~Swap the mechanical picker for the **bounded AI analyst**~~ — **built.**
    Both selectors ship behind `ENTRY_SELECTOR`; the baseline is logged on every

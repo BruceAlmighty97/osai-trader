@@ -59,6 +59,35 @@ export class MarketCalendarService {
     return !this.holidays(year).has(iso);
   }
 
+  /** The ET calendar date of an instant, as 'YYYY-MM-DD'. */
+  isoDate(date: Date = new Date()): string {
+    const { year, month, day } = this.etParts(date);
+    return isoDate(year, month, day);
+  }
+
+  /** Is this 'YYYY-MM-DD' (an ET date) a trading day? */
+  isTradingDate(iso: string): boolean {
+    return this.isTradingDay(noonEt(iso));
+  }
+
+  /**
+   * The trading day `n` sessions before an ET date, as 'YYYY-MM-DD'. n = 0 is
+   * the date itself when it trades, else the previous session. The playbook's
+   * time stop is "two trading days before expiration" (02 T8): for a Friday
+   * expiry that is Wednesday; for a Monday expiry it is the prior Thursday,
+   * and holidays are skipped, never counted.
+   */
+  tradingDaysBefore(iso: string, n: number): string {
+    let cur = noonEt(iso);
+    let remaining = n;
+    if (!this.isTradingDay(cur)) remaining += 1; // step to the last session first
+    while (remaining > 0) {
+      cur = new Date(cur.getTime() - 86_400_000);
+      if (this.isTradingDay(cur)) remaining -= 1;
+    }
+    return this.isoDate(cur);
+  }
+
   /** Is this a 1pm early-close half-day (July 3 / day-after-Thanksgiving / Dec 24)? */
   isEarlyClose(date: Date = new Date()): boolean {
     if (!this.isTradingDay(date)) return false; // a full holiday isn't "early close"
@@ -109,6 +138,13 @@ export class MarketCalendarService {
 }
 
 // --- date helpers (all pure) ---
+
+/** Noon ET on an ISO date — an instant that is unambiguously that ET date. */
+function noonEt(iso: string): Date {
+  const d = new Date(`${iso}T16:00:00Z`); // 16:00Z = 12:00 EDT / 11:00 EST
+  if (Number.isNaN(d.getTime())) throw new Error(`bad ISO date: ${iso}`);
+  return d;
+}
 
 function isoDate(y: number, m: number, d: number): string {
   return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;

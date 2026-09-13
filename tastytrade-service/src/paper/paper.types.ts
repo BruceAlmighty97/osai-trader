@@ -127,6 +127,17 @@ export interface PaperAccountSummary {
   winRate: number | null;
 }
 
+/** One leg of an open position, as valued right now. */
+export interface LegValuation {
+  action: string;
+  right: 'P' | 'C';
+  strike: number;
+  /** Mid, or null when the leg had no usable two-sided quote. */
+  mid: number | null;
+  /** Signed delta from the feed (puts negative), or null when no Greeks arrived. */
+  delta: number | null;
+}
+
 /** One open position valued at current market. */
 export interface PositionValuation {
   positionId: number;
@@ -155,6 +166,22 @@ export interface PositionValuation {
   /** Dollars for the whole position — NOT assumed equal to the entry credit. */
   maxProfit: number | null;
   maxRisk: number | null;
+  legs: LegValuation[];
+  /** Largest |delta| across the SHORT legs — the "tested" gauge (03 G-4). */
+  shortDeltaMax: number | null;
+  /** Largest |delta| across the LONG legs — a debit spread's thesis gauge (06 §5.2). */
+  longDeltaMax: number | null;
+  /** Underlying NBBO mid right now, or null when its quote was unusable. */
+  underlyingPrice: number | null;
+  /** Underlying's last trade print (dxfeed Trade), or null. */
+  underlyingLast: number | null;
+  /**
+   * TODAY's session range on the underlying (dxfeed Summary, only when its
+   * dayId is today's ET date — a stale prior-session low must never fire the
+   * price-touch stop). Null before the session's first print or on a stale day.
+   */
+  underlyingDayHigh: number | null;
+  underlyingDayLow: number | null;
 }
 
 /** An arm's live value: settled cash plus what the open book is worth. */

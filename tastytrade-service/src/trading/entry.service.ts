@@ -55,7 +55,7 @@ interface ArmRun {
 }
 
 /**
- * 10:00-11:30 ET, every 15 min — each experiment arm opens its best play, or passes.
+ * 10:00-15:30 ET, every 15 min — each experiment arm opens its best play, or passes.
  *
  * Three stages:
  *

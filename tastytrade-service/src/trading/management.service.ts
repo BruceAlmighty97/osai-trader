@@ -3,14 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { PhaseContext, PhaseResult, TradingPhase } from './trading.types';
 import { PaperService } from '../paper/paper.service';
 import { MarkToMarketService } from '../paper/mark-to-market.service';
-import { PositionValuation } from '../paper/paper.types';
-import { ExitReason } from '../persistence/persistence.types';
-
-/** A rule firing on one position, with the numbers that fired it. */
-interface ExitVerdict {
-  reason: ExitReason;
-  why: string;
-}
+import { MarketCalendarService } from '../orchestrator/market-calendar.service';
+import { ExitContext, ExitThresholds, classifyExit, timeStopDate } from './exit-rules';
 
 /** What one arm did this manage tick. */
 interface ArmManageOutcome {
@@ -23,74 +17,60 @@ interface ArmManageOutcome {
 }
 
 /**
- * 12:30 + 15:00-15:45 ET — value every open position and close what the rules
- * say. The exit half of the strategy, and the half that actually books P&L:
- * until a position closes, an arm's settled value never moves.
+ * Every tick 09:35-15:55 ET — value every open position and close what the
+ * rules say. The exit half of the strategy, and at 7-14 DTE the half that
+ * carries it: a tested spread can pass its stop and keep going inside an hour,
+ * so this runs on every tick of the session, not at two fixed checkpoints.
  *
  * Deterministic and idempotent. A position is closed at most once because
  * PaperService.close() rejects anything not currently OPEN, so a double tick
  * cannot double-book.
  *
- * Rules, in firing order (first match wins, and the order is the priority):
+ * The rules themselves live in exit-rules.ts (pure, testable). This service
+ * owns the plumbing: one batched re-quote for every arm, per-arm threshold
+ * resolution, the close, and the journal line.
  *
- *   1. STOP LOSS   — unrealized loss >= stopMultiple x MAX PROFIT. For a credit
- *                    spread that is the familiar "2x the credit received";
- *                    stated against max profit it is also correct for debit
- *                    structures, whose entry price is a cost, not a maximum
- *                    gain. Risk control outranks everything; take the loss.
- *   2. PROFIT      — captured >= profitTargetPct of max profit. The tastytrade
- *                    200k-trade result: harvesting at 50% beats holding to
- *                    expiry on both win rate and risk-adjusted return, because
- *                    the last 50% of decay costs you weeks of gamma exposure.
- *   3. DTE         — at/inside dteThreshold days. Gamma ramps hard into the
- *                    final sessions; exit regardless of P&L. Playbook 02 T8:
- *                    close two trading days before expiration. The stage-1
- *                    exit engine makes this NYSE-calendar-aware; until then
- *                    the default is 3 calendar days (a day early for a Friday
- *                    expiry, which is the conservative side).
- *                    TRANSITION: positions opened under the old 45-DTE policy
- *                    (dteAtOpen > LEGACY_DTE_EXIT) still exit at 21 DTE — the
- *                    rule they were opened under — rather than being carried
- *                    into a gamma window that policy never intended.
- *
- * Every threshold is per-arm overridable (ArmConfig), so exit policy is an A/B
- * variable exactly like entry policy.
- *
- * The AI is deliberately NOT here yet. Exits are where a model can do the most
+ * The AI is deliberately NOT here. Exits are where a model can do the most
  * damage — the rules are cheap, well-evidenced and unambiguous, so code owns
- * them. The future seam is judgment on the PROFIT and DTE cases only (take /
- * hold / roll); the stop is never negotiable.
+ * them. Rolling is not permitted at this DTE (02 T9), so there is no
+ * hold/roll judgment call to hand a model.
  */
-/**
- * Positions opened with more than this many DTE predate the 7-14 DTE playbook
- * and keep the 21-DTE exit they were opened under.
- */
-const LEGACY_DTE_EXIT = 21;
-
 @Injectable()
 export class ManagementService {
   private readonly logger = new Logger(ManagementService.name);
-  private readonly profitTargetPct: number;
-  private readonly stopMultiple: number;
-  private readonly dteThreshold: number;
+  private readonly defaults: ExitThresholds;
 
   constructor(
     private readonly paper: PaperService,
     private readonly mtm: MarkToMarketService,
+    private readonly calendar: MarketCalendarService,
     config: ConfigService,
   ) {
-    this.profitTargetPct = num(config.get('MANAGE_PROFIT_TARGET_PCT'), 0.5);
-    this.stopMultiple = num(config.get('MANAGE_STOP_MULTIPLE'), 2);
-    this.dteThreshold = num(config.get('MANAGE_DTE_THRESHOLD'), 3);
+    this.defaults = {
+      profitTargetPct: num(config.get('MANAGE_PROFIT_TARGET_PCT'), 0.5),
+      accelProfitTargetPct: num(config.get('MANAGE_ACCEL_PROFIT_TARGET_PCT'), 0.25),
+      accelDte: num(config.get('MANAGE_ACCEL_DTE'), 3),
+      stopLossMultiple: num(config.get('MANAGE_STOP_LOSS_MULTIPLE'), 1),
+      deltaStop: num(config.get('MANAGE_DELTA_STOP'), 0.4),
+      deltaStopCondor: num(config.get('MANAGE_DELTA_STOP_CONDOR'), 0.35),
+      debitLongDeltaStop: num(config.get('MANAGE_DEBIT_LONG_DELTA_STOP'), 0.2),
+      timeStopTradingDays: num(config.get('MANAGE_TIME_STOP_TRADING_DAYS'), 2),
+      timeStopFromMinute: num(config.get('MANAGE_TIME_STOP_FROM_MINUTE'), 10 * 60),
+    };
     this.logger.log(
-      `manage defaults: profitTarget=${this.profitTargetPct} ` +
-        `stopMultiple=${this.stopMultiple}x dteThreshold=${this.dteThreshold}d ` +
-        `(arms may override any of these)`,
+      `manage defaults: ${JSON.stringify(this.defaults)} (arms may override any of these)`,
     );
   }
 
   async run(ctx: PhaseContext): Promise<PhaseResult> {
-    // One batched re-quote covering every leg of every arm.
+    const parts = this.calendar.etParts(ctx.now);
+    const exitCtx: ExitContext = {
+      today: this.calendar.isoDate(ctx.now),
+      minuteOfDay: parts.hour * 60 + parts.minute,
+      tradingDaysBefore: (iso, n) => this.calendar.tradingDaysBefore(iso, n),
+    };
+
+    // One batched re-quote covering every leg (and underlying) of every arm.
     const valuation = await this.mtm.valueAll(null);
     const arms = await this.paper.listArms(true);
     const byName = new Map(arms.map((a) => [a.name, a]));
@@ -103,10 +83,16 @@ export class ManagementService {
       if (!arm) continue; // disabled arm — leave its book alone
 
       const cfg = arm.config ?? {};
-      const thresholds = {
-        profitTargetPct: num(cfg.profitTargetPct, this.profitTargetPct),
-        stopMultiple: num(cfg.stopMultiple, this.stopMultiple),
-        dteThreshold: num(cfg.dteThreshold, this.dteThreshold),
+      const t: ExitThresholds = {
+        profitTargetPct: num(cfg.profitTargetPct, this.defaults.profitTargetPct),
+        accelProfitTargetPct: num(cfg.accelProfitTargetPct, this.defaults.accelProfitTargetPct),
+        accelDte: num(cfg.accelDte, this.defaults.accelDte),
+        stopLossMultiple: num(cfg.stopLossMultiple, this.defaults.stopLossMultiple),
+        deltaStop: num(cfg.deltaStop, this.defaults.deltaStop),
+        deltaStopCondor: num(cfg.deltaStopCondor, this.defaults.deltaStopCondor),
+        debitLongDeltaStop: num(cfg.debitLongDeltaStop, this.defaults.debitLongDeltaStop),
+        timeStopTradingDays: num(cfg.timeStopTradingDays, this.defaults.timeStopTradingDays),
+        timeStopFromMinute: this.defaults.timeStopFromMinute,
       };
       const tag = `manage[${armVal.name}]`;
 
@@ -140,20 +126,25 @@ export class ManagementService {
           continue;
         }
 
-        const verdict = this.classify(pos, thresholds);
+        const verdict = classifyExit(pos, t, exitCtx);
         if (!verdict) {
           held += 1;
+          const stopLoss =
+            pos.maxProfit !== null && pos.maxProfit > 0
+              ? Math.min(
+                  t.stopLossMultiple * pos.maxProfit,
+                  pos.maxRisk !== null && pos.maxRisk > 0 ? 0.5 * pos.maxRisk : Infinity,
+                )
+              : null;
           this.logger.log(
             `${tag}: #${pos.positionId} ${pos.symbol} HOLD — ` +
               `${(pos.pctOfMaxProfit * 100).toFixed(0)}% of max ` +
-              `(target ${(thresholds.profitTargetPct * 100).toFixed(0)}%), ` +
+              `(target ${(t.profitTargetPct * 100).toFixed(0)}%), ` +
               `P&L $${pos.unrealizedPnl} of $${pos.maxProfit ?? '?'} max ` +
-              `(stop at $${pos.maxProfit ? round2(-thresholds.stopMultiple * pos.maxProfit) : '?'}), ` +
-              `${pos.dte}d left (time stop at ${
-                pos.dteAtOpen !== null && pos.dteAtOpen > LEGACY_DTE_EXIT
-                  ? Math.max(thresholds.dteThreshold, LEGACY_DTE_EXIT)
-                  : thresholds.dteThreshold
-              }d)`,
+              `(stop at -$${stopLoss === null ? '?' : round2(stopLoss)}) | ` +
+              `short Δ ${pos.shortDeltaMax ?? '?'} (stop ${t.deltaStop}) | ` +
+              `last ${pos.underlyingLast ?? pos.underlyingPrice ?? '?'} today's range ${pos.underlyingDayLow ?? '?'}-${pos.underlyingDayHigh ?? '?'} | ` +
+              `${pos.dte}d left, time stop ${timeStopDate(pos, t, exitCtx)}`,
           );
           continue;
         }
@@ -203,63 +194,6 @@ export class ManagementService {
       summary,
       details: { closed: closedTotal, arms: outcomes },
     };
-  }
-
-  /**
-   * First rule to fire wins, and the order encodes the priority: a position at
-   * both its stop and its DTE limit is recorded as a stop, because that is the
-   * fact worth knowing when reading the journal later.
-   */
-  private classify(
-    pos: PositionValuation,
-    t: { profitTargetPct: number; stopMultiple: number; dteThreshold: number },
-  ): ExitVerdict | null {
-    const debit = pos.currentDebit as number;
-    const captured = pos.pctOfMaxProfit as number;
-
-    // STOP expressed against MAX PROFIT, not the entry credit.
-    //
-    // "2x the credit received" is the familiar formulation, but it only makes
-    // sense for a credit structure, where max profit IS the credit. Stated as
-    // "unrealized loss >= stopMultiple x max profit" it is arithmetically the
-    // same rule for a credit spread and also correct for a debit spread, where
-    // the entry price is a cost rather than a maximum gain. The old form
-    // compared a debit-spread's cost-to-close against a NEGATIVE entryCredit
-    // and could never fire.
-    if (pos.maxProfit !== null && pos.maxProfit > 0 && pos.unrealizedPnl !== null) {
-      const stopAtLoss = -t.stopMultiple * pos.maxProfit;
-      if (pos.unrealizedPnl <= stopAtLoss) {
-        return {
-          reason: ExitReason.STOP_LOSS,
-          why:
-            `unrealized $${round2(pos.unrealizedPnl)} <= ${t.stopMultiple}x max profit ` +
-            `($${round2(stopAtLoss)}); cost to close ${debit} vs entry ${pos.entryCredit}`,
-        };
-      }
-    }
-
-    if (captured >= t.profitTargetPct) {
-      return {
-        reason: ExitReason.PROFIT_TARGET,
-        why:
-          `captured ${(captured * 100).toFixed(0)}% of max profit ` +
-          `>= ${(t.profitTargetPct * 100).toFixed(0)}% target`,
-      };
-    }
-
-    // A legacy 45-DTE position keeps its own, earlier, exit.
-    const legacy = pos.dteAtOpen !== null && pos.dteAtOpen > LEGACY_DTE_EXIT;
-    const dteExit = legacy ? Math.max(t.dteThreshold, LEGACY_DTE_EXIT) : t.dteThreshold;
-    if (pos.dte !== null && pos.dte <= dteExit) {
-      return {
-        reason: ExitReason.DTE_ROLL,
-        why:
-          `${pos.dte}d to expiration <= ${dteExit}d time stop` +
-          (legacy ? ` (legacy position opened at ${pos.dteAtOpen} DTE under the 45-DTE policy)` : ''),
-      };
-    }
-
-    return null;
   }
 }
 

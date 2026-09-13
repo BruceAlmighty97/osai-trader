@@ -5,12 +5,26 @@ import { PaperService } from './paper.service';
 import { PositionEntity } from '../persistence/entities/position.entity';
 import { PositionStatus } from '../persistence/persistence.types';
 import { TastytradeService } from '../tastytrade/tastytrade.service';
+import { MarketDataSubscriptionType } from '@tastytrade/api';
 import {
   ArmValuation,
   COMMISSION_PER_CONTRACT,
+  LegValuation,
   MarkToMarketResult,
   PositionValuation,
 } from './paper.types';
+
+/** Everything one feed symbol told us during the snapshot. */
+interface FeedRow {
+  bid?: number;
+  ask?: number;
+  delta?: number;
+  last?: number;
+  dayHigh?: number;
+  dayLow?: number;
+  /** dxfeed day id (days since epoch) the Summary range belongs to. */
+  dayId?: number;
+}
 
 const MULTIPLIER = 100; // options are per-100-shares
 
@@ -68,7 +82,9 @@ export class MarkToMarketService {
     const scoped = open.filter((p) => p.accountId && armIds.has(p.accountId));
 
     // Collect every leg symbol we need, deduped — the same contract can appear
-    // in more than one arm's book, and it only needs quoting once.
+    // in more than one arm's book, and it only needs quoting once. The
+    // underlying rides along in the same session: the delta and price-touch
+    // stops need it, and it is one more symbol on a socket already open.
     const symbols = new Set<string>();
     const unquotable: PositionEntity[] = [];
     for (const p of scoped) {
@@ -78,6 +94,7 @@ export class MarkToMarketService {
         continue;
       }
       legSyms.forEach((s) => symbols.add(s as string));
+      symbols.add(underlyingStreamerSymbol(p.symbol));
     }
 
     this.logger.log(
@@ -92,9 +109,7 @@ export class MarkToMarketService {
       );
     }
 
-    const quotes = symbols.size
-      ? await this.quote([...symbols])
-      : new Map<string, { bid: number; ask: number }>();
+    const quotes = symbols.size ? await this.quote([...symbols]) : new Map<string, FeedRow>();
 
     const armNames = new Map(arms.map((a) => [a.id, a.name]));
     const valuations: PositionValuation[] = [];
@@ -132,20 +147,46 @@ export class MarkToMarketService {
     return { asOf: new Date().toISOString(), durationMs: Date.now() - started, arms: armResults };
   }
 
-  /** One streamer session for every leg across every position. */
-  private async quote(
-    streamerSymbols: string[],
-  ): Promise<Map<string, { bid: number; ask: number }>> {
-    const out = new Map<string, { bid: number; ask: number }>();
-    const snap: any = await this.tastytrade.streamSnapshot(streamerSymbols, 8);
+  /**
+   * One streamer session for every leg (and underlying) across every position.
+   * Quote for mids, Greeks for the delta stop, Summary for the underlying's
+   * session high/low (the price-touch stop keys on any RTH print, not just
+   * where price sits when the tick happens to land).
+   */
+  private async quote(streamerSymbols: string[]): Promise<Map<string, FeedRow>> {
+    const out = new Map<string, FeedRow>();
+    const snap: any = await this.tastytrade.streamSnapshot(streamerSymbols, 8, [
+      MarketDataSubscriptionType.Quote,
+      MarketDataSubscriptionType.Greeks,
+      MarketDataSubscriptionType.Trade,
+      MarketDataSubscriptionType.Summary,
+    ]);
+    let quoted = 0;
+    let greeked = 0;
     for (const evt of (snap?.events as any[]) ?? []) {
       for (const e of Array.isArray(evt?.data) ? evt.data : []) {
-        if (e?.eventType !== 'Quote' || !e.eventSymbol) continue;
-        out.set(e.eventSymbol, { bid: e.bidPrice, ask: e.askPrice });
+        if (!e?.eventSymbol) continue;
+        const row = out.get(e.eventSymbol) ?? {};
+        if (e.eventType === 'Quote') {
+          row.bid = e.bidPrice;
+          row.ask = e.askPrice;
+          quoted += 1;
+        } else if (e.eventType === 'Greeks') {
+          row.delta = e.delta;
+          greeked += 1;
+        } else if (e.eventType === 'Trade') {
+          row.last = e.price;
+        } else if (e.eventType === 'Summary') {
+          row.dayHigh = e.dayHighPrice;
+          row.dayLow = e.dayLowPrice;
+          row.dayId = e.dayId;
+        }
+        out.set(e.eventSymbol, row);
       }
     }
     this.logger.log(
-      `mark-to-market: quoted ${out.size}/${streamerSymbols.length} legs`,
+      `mark-to-market: ${out.size}/${streamerSymbols.length} symbols heard from ` +
+        `(${quoted} quote events, ${greeked} greeks events)`,
     );
     return out;
   }
@@ -157,13 +198,30 @@ export class MarkToMarketService {
    */
   private valuePosition(
     p: PositionEntity,
-    quotes: Map<string, { bid: number; ask: number }>,
+    quotes: Map<string, FeedRow>,
     armNames: Map<number, string>,
   ): PositionValuation | null {
     const entryCredit = num(p.entryCredit);
     const qty = p.quantity;
     let currentDebit = 0;
     let priced = true;
+    const legVals: LegValuation[] = [];
+
+    // Underlying: mid only when two-sided and tight; a wide after-hours quote
+    // is not a price (see entry.service for the same rule).
+    const u = quotes.get(underlyingStreamerSymbol(p.symbol));
+    const uUsable =
+      u && Number.isFinite(u.bid) && Number.isFinite(u.ask) && (u.bid as number) > 0 && (u.ask as number) > 0;
+    const uMid = uUsable ? ((u!.bid as number) + (u!.ask as number)) / 2 : null;
+    const underlyingPrice =
+      uMid !== null && ((u!.ask as number) - (u!.bid as number)) / uMid <= 0.005 ? round4(uMid) : null;
+    const underlyingLast = Number.isFinite(u?.last) && (u!.last as number) > 0 ? (u!.last as number) : null;
+    // The session range only counts if it is TODAY's. Before the open (and
+    // all weekend) Summary still carries the previous session, and a prior
+    // day's low that sits under a short strike would fire a false touch stop.
+    const rangeIsToday = u?.dayId !== undefined && u.dayId === todayDayId();
+    const underlyingDayHigh = rangeIsToday && Number.isFinite(u?.dayHigh) ? (u!.dayHigh as number) : null;
+    const underlyingDayLow = rangeIsToday && Number.isFinite(u?.dayLow) ? (u!.dayLow as number) : null;
 
     for (const leg of p.legs ?? []) {
       const q = leg.streamerSymbol ? quotes.get(leg.streamerSymbol) : undefined;
@@ -183,9 +241,16 @@ export class MarkToMarketService {
         q &&
         Number.isFinite(q.bid) &&
         Number.isFinite(q.ask) &&
-        q.bid > 0 &&
-        q.ask > 0;
-      const mid = usable ? (q!.bid + q!.ask) / 2 : null;
+        (q.bid as number) > 0 &&
+        (q.ask as number) > 0;
+      const mid = usable ? ((q!.bid as number) + (q!.ask as number)) / 2 : null;
+      legVals.push({
+        action: leg.action,
+        right: leg.right as 'P' | 'C',
+        strike: num(leg.strike),
+        mid: mid === null ? null : round4(mid),
+        delta: Number.isFinite(q?.delta) ? round4(q!.delta as number) : null,
+      });
       if (mid === null) {
         this.logger.warn(
           `mark-to-market: position #${p.id} ${p.symbol} leg ${leg.strike}${leg.right} ` +
@@ -216,6 +281,7 @@ export class MarkToMarketService {
         dteAtOpen,
         quantity: qty,
         entryCredit: round2(entryCredit),
+        ...greekFields(legVals, underlyingPrice, underlyingLast, underlyingDayHigh, underlyingDayLow),
         currentDebit: null,
         unrealizedPnl: null,
         pctOfMaxProfit: null,
@@ -279,6 +345,7 @@ export class MarkToMarketService {
         dteAtOpen,
         quantity: qty,
         entryCredit: round2(entryCredit),
+        ...greekFields(legVals, underlyingPrice, underlyingLast, underlyingDayHigh, underlyingDayLow),
         currentDebit: null,
         unrealizedPnl: null,
         pctOfMaxProfit: null,
@@ -298,6 +365,7 @@ export class MarkToMarketService {
       dteAtOpen,
       quantity: qty,
       entryCredit: round2(entryCredit),
+      ...greekFields(legVals, underlyingPrice, underlyingLast, underlyingDayHigh, underlyingDayLow),
       currentDebit: round2(currentDebit),
       unrealizedPnl: round2(unrealizedPnl),
       maxProfit: maxProfitTotal === null ? null : round2(maxProfitTotal),
@@ -314,6 +382,56 @@ export class MarkToMarketService {
   }
 
 }
+/** dxfeed symbol for an equity/ETF underlying is just its ticker. */
+function underlyingStreamerSymbol(symbol: string): string {
+  return symbol.toUpperCase();
+}
+
+/** The leg-level and underlying fields shared by every valuation shape. */
+function greekFields(
+  legs: LegValuation[],
+  underlyingPrice: number | null,
+  underlyingLast: number | null,
+  underlyingDayHigh: number | null,
+  underlyingDayLow: number | null,
+): Pick<
+  PositionValuation,
+  | 'legs'
+  | 'shortDeltaMax'
+  | 'longDeltaMax'
+  | 'underlyingPrice'
+  | 'underlyingLast'
+  | 'underlyingDayHigh'
+  | 'underlyingDayLow'
+> {
+  const maxAbs = (ls: LegValuation[]): number | null => {
+    const ds = ls.map((l) => l.delta).filter((d): d is number => d !== null);
+    return ds.length ? round4(Math.max(...ds.map(Math.abs))) : null;
+  };
+  return {
+    legs,
+    shortDeltaMax: maxAbs(legs.filter((l) => /sell/i.test(l.action))),
+    longDeltaMax: maxAbs(legs.filter((l) => /buy/i.test(l.action))),
+    underlyingPrice,
+    underlyingLast,
+    underlyingDayHigh,
+    underlyingDayLow,
+  };
+}
+
+/** dxfeed dayId (days since the Unix epoch) for today's ET calendar date. */
+function todayDayId(): number {
+  const p: Record<string, string> = {};
+  for (const part of new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date()))
+    p[part.type] = part.value;
+  return Math.floor(Date.UTC(+p.year, +p.month - 1, +p.day) / 86_400_000);
+}
+
 function dteFrom(expiration: string, asOf = Date.now()): number | null {
   const exp = Date.parse(`${expiration}T20:00:00Z`); // ~16:00 ET
   if (Number.isNaN(exp) || Number.isNaN(asOf)) return null;
@@ -325,4 +443,7 @@ function num(v: unknown): number {
 }
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+function round4(n: number): number {
+  return Math.round(n * 10000) / 10000;
 }

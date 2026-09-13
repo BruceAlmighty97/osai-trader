@@ -14,6 +14,7 @@ import { TastytradeModule } from '../tastytrade/tastytrade.module';
 import { FinnhubModule } from '../finnhub/finnhub.module';
 import { SocialModule } from '../social/social.module';
 import { PaperModule } from '../paper/paper.module';
+import { CalendarModule } from '../orchestrator/calendar.module';
 
 /**
  * The "meat" — what actually happens in each trading-day phase. The orchestrator
@@ -26,6 +27,7 @@ import { PaperModule } from '../paper/paper.module';
     FinnhubModule,
     SocialModule,
     PaperModule,
+    CalendarModule,
   ],
   controllers: [TradingController],
   providers: [

@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { OrchestratorService } from './orchestrator.service';
-import { MarketCalendarService } from './market-calendar.service';
+import { CalendarModule } from './calendar.module';
 import { TradingModule } from '../trading/trading.module';
 
 /**
@@ -8,8 +8,8 @@ import { TradingModule } from '../trading/trading.module';
  * Owns WHEN work happens; delegates WHAT to TradingModule's TraderService.
  */
 @Module({
-  imports: [TradingModule],
-  providers: [OrchestratorService, MarketCalendarService],
-  exports: [OrchestratorService, MarketCalendarService],
+  imports: [TradingModule, CalendarModule],
+  providers: [OrchestratorService],
+  exports: [OrchestratorService, CalendarModule],
 })
 export class OrchestratorModule {}

@@ -31,11 +31,11 @@ it positive.
 | Credit / width | ≥ 33 % target, 25 % hard floor (25–33 % only with short Δ ≤ 0.20) | `ENTRY_MIN_CREDIT_RATIO`, `ENTRY_TARGET_CREDIT_RATIO`, `ENTRY_THIN_CREDIT_MAX_DELTA` | ✅ |
 | Minimum gross credit | ≥ $0.30 vertical / $0.60 four-leg | `ENTRY_MIN_CREDIT_ABS` (verticals); research prompt (four-leg) | ✅ / ⚠️ prompt-only for 4-leg |
 | IV gate | IVR ≥ 30 **and** IV %ile ≥ 50 **and** VRP ≥ 3 | `MIN_IV_RANK` in pre-market | ⚠️ IVR only — %ile and VRP are stage 3 |
-| Profit target | 50 % (25 % at ≤ 3 DTE, flies/BWBs) | `MANAGE_PROFIT_TARGET_PCT` | ⚠️ 50 % only — accelerated target is stage 1 |
-| Loss stop | mark ≥ 2 × credit **or** short \|Δ\| ≥ 0.40 **or** RTH print through the short strike | `MANAGE_STOP_MULTIPLE` | ⚠️ 2× only — delta and touch stops are stage 1 |
-| Time stop | 15:30 ET two trading days before expiry | `MANAGE_DTE_THRESHOLD` = 3 calendar days (interim) | ⚠️ calendar-aware version is stage 1 |
+| Profit target | 50 % (25 % at ≤ 3 DTE, flies/BWBs) | `exit-rules.ts`: `MANAGE_PROFIT_TARGET_PCT`, `MANAGE_ACCEL_PROFIT_TARGET_PCT`, `MANAGE_ACCEL_DTE` | ✅ (Tier-1-event variant with stage 2) |
+| Loss stop | mark ≥ 2 × credit **or** short \|Δ\| ≥ 0.40 **or** RTH print through the short strike; rich-credit / debit: 0.5 × max risk | `exit-rules.ts`: `MANAGE_STOP_LOSS_MULTIPLE` (1× max profit, capped at 0.5× max risk), `MANAGE_DELTA_STOP[_CONDOR]`, touch via today's session range | ✅ |
+| Time stop | 15:30 ET two trading days before expiry | `exit-rules.ts` + `MarketCalendarService.tradingDaysBefore`; fires from 10:00 on that session (`MANAGE_TIME_STOP_TRADING_DAYS`, `MANAGE_TIME_STOP_FROM_MINUTE`) | ✅ |
 | Rolling | never at ≤ 14 DTE | no roll code path exists | ✅ |
-| Entry window | 10:00–15:30 ET with release-day offsets | `PHASE_SCHEDULE` 10:00–11:30 | ⚠️ stage 1 widens it |
+| Entry window | 10:00–15:30 ET with release-day offsets | `PHASE_SCHEDULE` 10:00–15:30 on quarter-hours; manage every 5 min 09:35–15:55 | ✅ / offsets with stage 2 |
 | Event blackout | FOMC/CPI/NFP 24 h; quad witching; early closes | — | ❌ stage 2 |
 | Regime no-trade | VIX family + VRP | — | ❌ stage 3 |
 | Kill switches | K1–K11 | `killSwitch` boolean only | ❌ stage 4 |
@@ -111,4 +111,5 @@ days — a 10-DTE entry minus the two-day time stop.
 ## Legacy positions
 
 Positions opened under the 45-DTE policy (identified by `dteAtOpen > 21`) keep
-their 21-DTE exit until closed. New positions use the playbook time stop.
+their 21-DTE exit (`dte_roll`) until closed. New positions use the playbook
+time stop (`time_exit`).

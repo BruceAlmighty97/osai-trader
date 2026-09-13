@@ -26,10 +26,24 @@ export interface ArmConfig {
   maxQuoteSpreadAbs?: number;
   slateSize?: number;
   maxNewPerRun?: number;
-  /** Exit policy — an A/B variable exactly like entry policy. */
+  minShortDelta?: number;
+  maxShortDelta?: number;
+  minCreditAbs?: number;
+  targetCreditToWidth?: number;
+  thinCreditMaxDelta?: number;
+  minEmMultiple?: number;
+  preferredEmMultiple?: number;
+  minDte?: number;
+  maxDte?: number;
+  /** Exit policy — an A/B variable exactly like entry policy (see ExitThresholds). */
   profitTargetPct?: number;
-  stopMultiple?: number;
-  dteThreshold?: number;
+  accelProfitTargetPct?: number;
+  accelDte?: number;
+  stopLossMultiple?: number;
+  deltaStop?: number;
+  deltaStopCondor?: number;
+  debitLongDeltaStop?: number;
+  timeStopTradingDays?: number;
 }
 
 /**

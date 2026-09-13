@@ -39,9 +39,16 @@ export enum PositionStatus {
 
 /** Why a position was closed — drives the management-loop exit rules. */
 export enum ExitReason {
-  PROFIT_TARGET = 'profit_target', // 50% of max profit
-  DTE_ROLL = 'dte_roll', // ~21 DTE, before gamma ramps
-  STOP_LOSS = 'stop_loss', // ~2x credit received
+  PROFIT_TARGET = 'profit_target', // 50% of max profit (25% accelerated)
+  /** Legacy 45-DTE policy: closed at 21 DTE. New positions use TIME_EXIT. */
+  DTE_ROLL = 'dte_roll',
+  /** Playbook 02 T8: two trading days before expiration, regardless of P&L. */
+  TIME_EXIT = 'time_exit',
+  STOP_LOSS = 'stop_loss', // mark >= 2x credit (loss = 1x credit)
+  /** Short strike |delta| >= 0.40 (0.35 condors) — position is "tested" (03 G-4). */
+  STOP_DELTA = 'stop_delta',
+  /** Underlying printed at/through the short strike in RTH (06 §5.2). */
+  STOP_TOUCH = 'stop_touch',
   EXPIRED = 'expired', // held to expiration
   MANUAL = 'manual', // closed by hand
 }

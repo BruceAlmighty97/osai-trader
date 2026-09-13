@@ -229,6 +229,10 @@ export class TastytradeService implements OnModuleInit {
   async streamSnapshot(
     streamerSymbols: string[],
     seconds = 6,
+    subscriptionTypes: MarketDataSubscriptionType[] = [
+      MarketDataSubscriptionType.Quote,
+      MarketDataSubscriptionType.Greeks,
+    ],
   ): Promise<Record<string, unknown>> {
     await this.ensureLogin();
     const tokenResp = await this.getQuoteToken();
@@ -264,10 +268,7 @@ export class TastytradeService implements OnModuleInit {
           // Queue subscriptions, then open the channel (queued subs flush on open).
           for (const sym of streamerSymbols) {
             streamer.addSubscription(sym, {
-              subscriptionTypes: [
-                MarketDataSubscriptionType.Quote,
-                MarketDataSubscriptionType.Greeks,
-              ],
+              subscriptionTypes,
               channelId,
             });
           }
