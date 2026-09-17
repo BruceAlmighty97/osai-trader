@@ -146,7 +146,10 @@ export class EntryService {
       maxNewPerRun: num(config.get('ENTRY_MAX_NEW_PER_RUN'), 1),
       maxQuoteSpreadPct: num(config.get('ENTRY_MAX_QUOTE_SPREAD_PCT'), 0.5),
       maxQuoteSpreadAbs: num(config.get('ENTRY_MAX_QUOTE_SPREAD_ABS'), 0.1),
-      slateSize: num(config.get('ENTRY_SLATE_SIZE'), 5),
+      // 10, not 5: chains are fetched in parallel so the cost is the same ~9s,
+      // and at 5 the IVR-ranked slate was filled by cheap sector ETFs that
+      // could never clear the fee gate while SPY at IVR 31 never got priced.
+      slateSize: num(config.get('ENTRY_SLATE_SIZE'), 10),
       model: config.get('ENTRY_MODEL'),
     };
     this.logger.log(

@@ -35,6 +35,12 @@ export class PreMarketService {
   private readonly redditDiscoverTop: number;
   /** |close − SMA20| / SMA20 inside which the trend read is 'flat' (both sides priced). */
   private readonly trendFlatBand: number;
+  /**
+   * Cheapest underlying worth a slate slot. Width is capped at a % of spot and
+   * the fee gate needs $0.25 gross per contract; below ~$60 a 0.20Δ vertical
+   * cannot pay that, so the name only crowds a liquid one out of the slate.
+   */
+  private readonly minUnderlyingPrice: number;
 
   constructor(
     @InjectRepository(TradingDayEntity)
@@ -56,6 +62,7 @@ export class PreMarketService {
       config.get<string>('APEWISDOM_DISCOVER_TOP', '25'),
     );
     this.trendFlatBand = Number(config.get<string>('TREND_FLAT_BAND', '0.0025'));
+    this.minUnderlyingPrice = Number(config.get<string>('MIN_UNDERLYING_PRICE', '60'));
   }
 
   async run(ctx: PhaseContext): Promise<PhaseResult> {
@@ -244,6 +251,23 @@ export class PreMarketService {
         `trend: ${labelled}/${qualified.length} survivors labelled — ` +
           Object.entries(tally).map(([k, v]) => `${k} ${v}`).join(', '),
       );
+
+      // 5c. PRICE FLOOR — a cheap underlying cannot pay the fee gate at these
+      // strikes (EWZ at $37: the widest allowed spread paid $0.08), so it
+      // would only take a slate slot from a liquid index ETF. Judged on the
+      // last close we just fetched; unknown price = keep (do not reject on
+      // missing data).
+      const cheap = qualified.filter(
+        (c) => c.lastClose !== null && c.lastClose !== undefined && c.lastClose < this.minUnderlyingPrice,
+      );
+      if (cheap.length) {
+        rejections['too cheap'] = (rejections['too cheap'] ?? 0) + cheap.length;
+        this.logger.log(
+          `price floor: dropped ${cheap.length} under $${this.minUnderlyingPrice} — ` +
+            cheap.map((c) => `${c.symbol}($${c.lastClose})`).join(', '),
+        );
+        for (const c of cheap) qualified.splice(qualified.indexOf(c), 1);
+      }
     } catch (err) {
       this.logger.warn(`trend read failed (both sides will be priced): ${errMsg(err)}`);
     }
