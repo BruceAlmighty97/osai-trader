@@ -28,8 +28,8 @@ it positive.
 | Concurrent positions | playbook 5 / 2 per group / 1 contract — **overridden to 2 positions, 1 per group, contracts scaled to budget** (cap `ENTRY_MAX_CONTRACTS` 10) | `maxConcurrentPositions`, `maxPerCorrelationGroup`; `EntryService` sizes contracts | ⚠️ deliberate override |
 | Short-strike delta | 0.15–0.25, target 0.20 (never > 0.30) | `ENTRY_MIN/MAX_SHORT_DELTA`, `ENTRY_TARGET_DELTA` | ✅ |
 | Short strike vs expected move | ≥ 1.0 × EM preferred, 0.8 × minimum (02 T5); 1.5 × in VIX 20–30 | `ENTRY_PREFERRED_EM_MULTIPLE` / `ENTRY_MIN_EM_MULTIPLE`; EM from the strike's own IV | ✅ / VIX variant ❌ |
-| Credit / width | ≥ 33 % target, 25 % hard floor (25–33 % only with short Δ ≤ 0.20) | `ENTRY_MIN_CREDIT_RATIO`, `ENTRY_TARGET_CREDIT_RATIO`, `ENTRY_THIN_CREDIT_MAX_DELTA` | ✅ |
-| Minimum gross credit | ≥ $0.30 vertical / $0.60 four-leg | `ENTRY_MIN_CREDIT_ABS` (verticals); research prompt (four-leg) | ✅ / ⚠️ prompt-only for 4-leg |
+| Credit / width | playbook ≥ 33 % target / 25 % floor — **re-tuned for verticals 2026-09-16 to 20 % / 15 %** (real chains pay 14–18 % at ≤ 0.25Δ); `mech-strict` arm keeps 25 %/33 % as control | `ENTRY_MIN_CREDIT_RATIO`, `ENTRY_TARGET_CREDIT_RATIO`, `ENTRY_THIN_CREDIT_MAX_DELTA` | ⚠️ deliberate override |
+| Minimum gross credit | ≥ $0.30 vertical / $0.60 four-leg — **$0.25 for verticals since 2026-09-16** (fees ≤ 10 %) | `ENTRY_MIN_CREDIT_ABS` (verticals); research prompt (four-leg) | ⚠️ override / prompt-only for 4-leg |
 | IV gate | IVR ≥ 30 **and** IV %ile ≥ 50 **and** VRP ≥ 3 | `MIN_IV_RANK` in pre-market | ⚠️ IVR only — %ile and VRP are stage 3 |
 | Profit target | 50 % (25 % at ≤ 3 DTE, flies/BWBs) | `exit-rules.ts`: `MANAGE_PROFIT_TARGET_PCT`, `MANAGE_ACCEL_PROFIT_TARGET_PCT`, `MANAGE_ACCEL_DTE` | ✅ (Tier-1-event variant with stage 2) |
 | Loss stop | mark ≥ 2 × credit **or** short \|Δ\| ≥ 0.40 **or** RTH print through the short strike; rich-credit / debit: 0.5 × max risk | `exit-rules.ts`: `MANAGE_STOP_LOSS_MULTIPLE` (1× max profit, capped at 0.5× max risk), `MANAGE_DELTA_STOP[_CONDOR]`, touch via today's session range | ✅ |
@@ -39,7 +39,7 @@ it positive.
 | Event blackout | FOMC/CPI/NFP 24 h; quad witching; early closes | — | ❌ stage 2 |
 | Regime no-trade | VIX family + VRP | — | ❌ stage 3 |
 | Kill switches | K1–K11 | `killSwitch` boolean only | ❌ stage 4 |
-| Structures | credit verticals, condors, flies, BWB, debit verticals | mechanical arms: **bull put only**; research arm: all | ⚠️ stage 5 |
+| Structures | credit verticals, condors, flies, BWB, debit verticals | mechanical arms: **bull put + bear call**, side chosen by the 20-day trend read (04 §5.1 simplified; `TREND_FLAT_BAND`); no short calls on quarterly-dividend ETFs through the ex-date (01 D1); research arm: all | ✅ verticals (the book's focus) — condors/flies not in the mechanical engine |
 | Products | XSP/XND/SPXW first, SPY/QQQ fallback | watchlist ETFs + single names | ❌ stage 6 |
 
 ## How the entry engine applies the rules (mechanical arms)
@@ -70,6 +70,15 @@ it positive.
 6. **Score** on hard economics only (credit/width above the floor, delta fit,
    IVR, quote tightness); the AI selector sees the EM multiple alongside.
 
+## Side selection (2026-09-16)
+
+Pre-market pulls ~30 daily closes per survivor in one candle session and
+labels each `up` / `down` / `flat` from last close vs its 20-day SMA
+(`TREND_FLAT_BAND` 0.25 %). Entry sells the put side on `up`, the call side on
+`down`, and prices both on `flat`/unknown so the score decides. Short calls on
+the SPDR/index ETFs are never opened through the ~3rd-Friday ex-dividend of
+Mar/Jun/Sep/Dec (01 D1); single names are not yet covered by that guard.
+
 ## Known tension: the credit floor vs the delta band (read this)
 
 Measured on synthetic Black-Scholes chains at entry-engine defaults
@@ -88,11 +97,12 @@ Consequence: **as written, the mechanical vertical arm is near-dormant.** The
 structures the playbook says *can* pay 25 %+ are the rich-credit ones (iron
 fly C ≥ 0.5 W, credit BWB, condors combining two sides), which only the
 research arm can build today (stage 5 adds them to the mechanical engine).
-Stage 0 ships `mech`/`ai` playbook-strict and adds a **`mech-relaxed`** arm
-(migration `1788730000000`) that overrides only the credit gates —
-`minCreditToWidth` 0.18, `minCreditAbs` 0.20, `thinCreditMaxDelta` 0.25 — so the
-cost of the floor is measured as an A/B rather than loosened silently. Judge it
-on the decision log and loser size, not on a few weeks of P&L.
+Resolution (2026-09-16, Geoff: "focus on spreads"): the defaults now carry
+vertical-tuned gates — floor 15 %, target 20 %, $0.25 gross — and the spare arm
+became **`mech-strict`** (migration `1788750000000`), pinned to the playbook's
+25 % / 33 % / $0.30 as the control. Judge the difference on the decision log
+and loser size, not on a few weeks of P&L. Bear calls pay less than puts at the
+same delta (flatter call skew) and will qualify mainly on richer-IV days.
 
 ## Sizing policy (2026-09-16): two positions, half the account each
 

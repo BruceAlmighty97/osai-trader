@@ -130,6 +130,8 @@ calendar, regime gate, kill switches, more structures, index products).
 The 45-DTE methodology is retired; positions opened under it exit at 21 DTE.
 **Sizing override (2026-09-16):** 2 positions, up to 50% of NLV each, 1 per
 correlated group, contracts scaled to budget — replaces the playbook's 5%/30%/5.
+**Book = vertical spreads** (bull put / bear call by 20-day trend); credit gates
+re-tuned to 15%/20%/$0.25 for verticals, `mech-strict` arm holds the playbook's.
 
 ## Coding Guidelines
 

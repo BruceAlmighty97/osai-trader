@@ -20,6 +20,8 @@ import { ApeWisdomClient } from '../social/apewisdom.client';
  *   3. QUALIFY   earnings (hard exclude) -> liquidity -> IV rank
  *   4. RANK      by IV rank, tie-broken on watchlist priority
  *   5. SENTIMENT survivors only (one StockTwits call each + Reddit mention counts)
+ *   5b. TREND    survivors only — daily closes in one candle session -> 20-day
+ *                mean and 5-day move, which decide put side vs call side
  *   6. PERSIST   to trading_day so the 10:00 entry phase can read it
  *
  * Measured live: ~84 candidates in, ~24 qualified out.
@@ -31,6 +33,8 @@ export class PreMarketService {
   private readonly minLiquidityRating: number;
   /** How many of ApeWisdom's top tickers join the discovery pool (0 = off). */
   private readonly redditDiscoverTop: number;
+  /** |close − SMA20| / SMA20 inside which the trend read is 'flat' (both sides priced). */
+  private readonly trendFlatBand: number;
 
   constructor(
     @InjectRepository(TradingDayEntity)
@@ -51,6 +55,7 @@ export class PreMarketService {
     this.redditDiscoverTop = Number(
       config.get<string>('APEWISDOM_DISCOVER_TOP', '25'),
     );
+    this.trendFlatBand = Number(config.get<string>('TREND_FLAT_BAND', '0.0025'));
   }
 
   async run(ctx: PhaseContext): Promise<PhaseResult> {
@@ -164,6 +169,10 @@ export class PreMarketService {
         bearish: null,
         redditMentions: null,
         redditMentions24hAgo: null,
+        trend: null,
+        sma20: null,
+        lastClose: null,
+        move5dPct: null,
         priority: c.priority,
       });
     }
@@ -196,6 +205,47 @@ export class PreMarketService {
       );
     } catch (err) {
       this.logger.warn(`ApeWisdom (reddit) lookup failed: ${errMsg(err)}`);
+    }
+
+    // 5b. TREND — playbook 04 §5.1 simplified to one number: last close vs
+    // the 20-day mean. Above by more than the flat band = 'up' (sell puts),
+    // below = 'down' (sell calls), inside = 'flat' (price both sides). One
+    // candle session for every survivor; a symbol without candles gets null
+    // and the entry engine prices both sides for it.
+    try {
+      const closes = await this.tastytrade.getDailyCloses(
+        qualified.map((c) => c.symbol),
+        30,
+      );
+      let labelled = 0;
+      for (const c of qualified) {
+        const series = closes.get(c.symbol) ?? [];
+        if (series.length < 21) {
+          c.trend = null;
+          continue;
+        }
+        const last20 = series.slice(-20);
+        const sma20 = last20.reduce((s, r) => s + r.close, 0) / 20;
+        const lastClose = series[series.length - 1].close;
+        const fiveAgo = series[series.length - 6]?.close;
+        const pctVsSma = (lastClose - sma20) / sma20;
+        c.sma20 = Math.round(sma20 * 100) / 100;
+        c.lastClose = lastClose;
+        c.move5dPct = fiveAgo ? round1(((lastClose - fiveAgo) / fiveAgo) * 100) : null;
+        c.trend =
+          pctVsSma > this.trendFlatBand ? 'up' : pctVsSma < -this.trendFlatBand ? 'down' : 'flat';
+        labelled += 1;
+      }
+      const tally = qualified.reduce(
+        (t, c) => ((t[c.trend ?? 'none'] = (t[c.trend ?? 'none'] ?? 0) + 1), t),
+        {} as Record<string, number>,
+      );
+      this.logger.log(
+        `trend: ${labelled}/${qualified.length} survivors labelled — ` +
+          Object.entries(tally).map(([k, v]) => `${k} ${v}`).join(', '),
+      );
+    } catch (err) {
+      this.logger.warn(`trend read failed (both sides will be priced): ${errMsg(err)}`);
     }
 
     // 6. PERSIST — the entry phase reads this back at 10:00

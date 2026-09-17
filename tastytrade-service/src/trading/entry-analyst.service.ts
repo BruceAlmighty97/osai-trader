@@ -222,8 +222,8 @@ export class EntryAnalystService {
             : `${p.bullish ?? 0} bullish / ${p.bearish ?? 0} bearish`;
         return [
           `[${i}] ${p.symbol}${p.correlationGroup ? ` (group: ${p.correlationGroup})` : ' (ungrouped single stock)'}`,
-          `    bull put spread ${p.shortStrike}/${p.longStrike}P, exp ${p.expiration} (${p.dte} DTE)`,
-          `    underlying ${p.underlyingPrice}, short strike is ${pct((p.underlyingPrice - p.shortStrike) / p.underlyingPrice)} below spot`,
+          `    ${p.side === 'P' ? 'bull put' : 'bear call'} spread ${p.shortStrike}/${p.longStrike}${p.side}, exp ${p.expiration} (${p.dte} DTE), trend read ${p.trend ?? 'n/a'}`,
+          `    underlying ${p.underlyingPrice}, short strike is ${pct(Math.abs(p.underlyingPrice - p.shortStrike) / p.underlyingPrice)} ${p.side === 'P' ? 'below' : 'above'} spot`,
           `    short delta ${p.shortDelta.toFixed(3)}, width ${p.width}` +
             (p.emMultiple !== null ? `, short strike ${p.emMultiple}x the 1-SD expected move ($${p.expectedMove})` : ''),
           `    ${p.contracts} contract(s): credit $${(p.credit * 100 * p.contracts).toFixed(0)} / max risk $${p.totalRisk.toFixed(0)} (credit is ${pct(p.creditToWidth)} of width)`,

@@ -1,3 +1,5 @@
+import { StrategyType } from '../persistence/persistence.types';
+
 /**
  * Shared shapes for the entry phase. Lives in its own file so the mechanical
  * selector (entry.service) and the AI selector (entry-analyst.service) can both
@@ -75,6 +77,11 @@ export interface ScoreParts {
  */
 export interface SpreadPlan {
   symbol: string;
+  /** 'P' = bull put spread, 'C' = bear call spread. */
+  side: 'P' | 'C';
+  strategy: StrategyType;
+  /** Pre-market trend read that chose the side (null = both sides were priced). */
+  trend: 'up' | 'down' | 'flat' | null;
   correlationGroup: string | null;
   expiration: string;
   dte: number;

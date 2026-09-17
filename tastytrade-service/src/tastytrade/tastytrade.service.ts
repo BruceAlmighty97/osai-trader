@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import TastytradeClient, {
   MarketDataStreamer,
   MarketDataSubscriptionType,
+  CandleType,
 } from '@tastytrade/api';
 
 const ENVS = {
@@ -308,6 +309,90 @@ export class TastytradeService implements OnModuleInit {
           eventCount: events.length,
           events,
         });
+      }, seconds * 1000);
+    });
+  }
+
+  /**
+   * Daily closes for many symbols in ONE streamer session (dxfeed Candle
+   * history, `SYM{=d}`). Returns oldest-first per symbol; a symbol the feed
+   * did not answer for is simply absent. Used by pre-market for the trend
+   * read (20-day mean, 5-day move) — ~30 symbols x 30 candles arrive well
+   * inside the window.
+   */
+  async getDailyCloses(
+    symbols: string[],
+    days = 30,
+    seconds = 7,
+  ): Promise<Map<string, { date: string; close: number }[]>> {
+    await this.ensureLogin();
+    const tokenResp = await this.getQuoteToken();
+    const token = tokenResp?.token ?? tokenResp?.['token'];
+    const url =
+      tokenResp?.['dxlink-url'] ??
+      tokenResp?.['streamer-url'] ??
+      tokenResp?.['websocket-url'] ??
+      tokenResp?.url;
+    if (!token || !url) throw new Error('No quote token/url for candle session');
+
+    const streamer = new MarketDataStreamer();
+    const channelId = 5;
+    const events: any[] = [];
+    const fromTime = Date.now() - (days + 10) * 86_400_000; // pad for weekends/holidays
+    const started = Date.now();
+
+    return new Promise((resolve) => {
+      const removeData = streamer.addDataListener((d: any) => events.push(d), channelId);
+      const removeError = streamer.addErrorListener((err: any) =>
+        this.logger.warn(`candle streamer error (${symbols.length} symbols): ${err?.message ?? err}`),
+      );
+      const removeAuth = streamer.addAuthStateChangeListener((ok: boolean) => {
+        if (!ok) return;
+        for (const sym of symbols) {
+          streamer.addCandleSubscription(sym.toUpperCase(), fromTime, {
+            period: 1,
+            type: CandleType.Day,
+            channelId,
+          });
+        }
+        streamer.openFeedChannel(channelId);
+      });
+      streamer.connect(url, token);
+
+      setTimeout(() => {
+        removeData();
+        removeAuth();
+        removeError();
+        const ws = (streamer as unknown as { webSocket?: any }).webSocket;
+        if (ws && typeof ws.on === 'function') ws.on('error', () => undefined);
+        try {
+          streamer.disconnect();
+        } catch (err) {
+          this.logger.warn(`candle streamer disconnect failed: ${errText(err)}`);
+        }
+
+        const out = new Map<string, { date: string; close: number }[]>();
+        for (const evt of events) {
+          for (const e of Array.isArray(evt?.data) ? evt.data : []) {
+            if (e?.eventType !== 'Candle' || !e.eventSymbol) continue;
+            const sym = String(e.eventSymbol).split('{')[0];
+            const close = Number(e.close);
+            if (!Number.isFinite(close) || close <= 0 || !Number.isFinite(e.time)) continue;
+            const date = new Date(e.time).toISOString().slice(0, 10);
+            const arr = out.get(sym) ?? [];
+            // dxfeed can replay a candle; last write wins per date.
+            const i = arr.findIndex((r) => r.date === date);
+            if (i >= 0) arr[i] = { date, close };
+            else arr.push({ date, close });
+            out.set(sym, arr);
+          }
+        }
+        for (const arr of out.values()) arr.sort((a, b) => a.date.localeCompare(b.date));
+        this.logger.log(
+          `daily candles: ${out.size}/${symbols.length} symbols, ` +
+            `${[...out.values()].reduce((n, a) => n + a.length, 0)} candles in ${Date.now() - started}ms`,
+        );
+        resolve(out);
       }, seconds * 1000);
     });
   }

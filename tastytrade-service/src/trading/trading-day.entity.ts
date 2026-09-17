@@ -22,6 +22,16 @@ export interface ShortlistCandidate {
   /** Reddit mention count (ApeWisdom aggregate) and its 24h baseline; null = not in the top list. */
   redditMentions?: number | null;
   redditMentions24hAgo?: number | null;
+  /**
+   * Trend read from daily closes (playbook 04 §5.1, simplified): 'up' = last
+   * close > 20-day SMA by more than the flat band, 'down' = below, 'flat' =
+   * inside it. Drives which side the entry engine sells. null = no candles.
+   */
+  trend?: 'up' | 'down' | 'flat' | null;
+  sma20?: number | null;
+  lastClose?: number | null;
+  /** Last five sessions' move as a % of price — a fast, sharp move is context for the AI selector. */
+  move5dPct?: number | null;
 }
 
 /**

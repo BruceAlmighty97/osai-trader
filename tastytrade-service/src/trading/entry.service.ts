@@ -25,6 +25,33 @@ import {
  */
 const ROUND_TRIP_FEES_2LEG = 2.5;
 
+/**
+ * ETFs that go ex-dividend around the third Friday of Mar/Jun/Sep/Dec — the
+ * SPDR family and the big index trackers. Short calls on these are not opened
+ * through that date (01 D1). Non-payers (GLD, SLV, USO, UNG, VXX) and single
+ * names are outside this rule.
+ */
+const QUARTERLY_EX_DIV_ETFS = new Set([
+  'SPY', 'QQQ', 'IWM', 'DIA', 'MDY',
+  'XLE', 'XLF', 'XLK', 'XLV', 'XLI', 'XLU', 'XLP', 'XLY', 'XLB', 'XLRE', 'XLC',
+  'TLT', 'IEF', 'HYG', 'LQD', 'EWZ', 'EFA', 'EEM', 'XOP', 'KRE', 'SMH', 'ITA', 'XRT', 'GDX',
+]);
+
+/** Third Friday of the current-or-next quarter-end month, as 'YYYY-MM-DD'. */
+function nextQuarterlyExDiv(now: Date): string {
+  const y = now.getUTCFullYear();
+  for (let m = now.getUTCMonth(); m < now.getUTCMonth() + 12; m++) {
+    const month = m % 12;
+    if (![2, 5, 8, 11].includes(month)) continue;
+    const year = y + Math.floor(m / 12);
+    const first = new Date(Date.UTC(year, month, 1)).getUTCDay();
+    const day = 1 + ((5 - first + 7) % 7) + 14;
+    const iso = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    if (iso >= now.toISOString().slice(0, 10)) return iso;
+  }
+  return '9999-12-31';
+}
+
 /** Widest (ask − bid) / mid on the UNDERLYING before its mid is distrusted as spot. */
 const MAX_UNDERLYING_QUOTE_REL = 0.005;
 
@@ -101,10 +128,15 @@ export class EntryService {
       minShortDelta: num(config.get('ENTRY_MIN_SHORT_DELTA'), 0.15),
       maxShortDelta: num(config.get('ENTRY_MAX_SHORT_DELTA'), 0.25),
       widthPct: num(config.get('ENTRY_WIDTH_PCT'), 0.05),
-      minCreditToWidth: num(config.get('ENTRY_MIN_CREDIT_RATIO'), 0.25),
-      targetCreditToWidth: num(config.get('ENTRY_TARGET_CREDIT_RATIO'), 0.33),
-      thinCreditMaxDelta: num(config.get('ENTRY_THIN_CREDIT_MAX_DELTA'), 0.2),
-      minCreditAbs: num(config.get('ENTRY_MIN_CREDIT_ABS'), 0.3),
+      // Credit gates re-tuned for VERTICALS (2026-09-16): the playbook's 25% /
+      // $0.30 was written for condors and flies; a vertical at <= 0.25Δ and
+      // >= 0.8x EM pays 14-18% of width on real chains (puts; calls less).
+      // 15% floor, 20% target, $0.25 gross (fees <= 10%). The mech-strict arm
+      // pins the playbook values as the control.
+      minCreditToWidth: num(config.get('ENTRY_MIN_CREDIT_RATIO'), 0.15),
+      targetCreditToWidth: num(config.get('ENTRY_TARGET_CREDIT_RATIO'), 0.2),
+      thinCreditMaxDelta: num(config.get('ENTRY_THIN_CREDIT_MAX_DELTA'), 0.25),
+      minCreditAbs: num(config.get('ENTRY_MIN_CREDIT_ABS'), 0.25),
       minEmMultiple: num(config.get('ENTRY_MIN_EM_MULTIPLE'), 0.8),
       preferredEmMultiple: num(config.get('ENTRY_PREFERRED_EM_MULTIPLE'), 1.0),
       targetDte: num(config.get('ENTRY_TARGET_DTE'), 10),
@@ -292,12 +324,20 @@ export class EntryService {
         misses.push(`${c.symbol}:chain-error`);
         continue;
       }
-      const plan = this.planFromSnapshot(c, snap, params, riskBudget, tag);
-      if (!plan) {
-        misses.push(`${c.symbol}:no-viable-spread`);
-        continue;
+      // Which side(s) to sell — playbook 02 §9: bull put above the 20-day
+      // mean, bear call below it, both priced when the read is flat or
+      // unknown and the score decides. Never both sides of one name on the
+      // slate as separate positions (maxPerUnderlying is 1 anyway).
+      const sides: ('P' | 'C')[] =
+        c.trend === 'up' ? ['P'] : c.trend === 'down' ? ['C'] : ['P', 'C'];
+      let any = false;
+      for (const side of sides) {
+        const plan = this.planFromSnapshot(c, snap, params, riskBudget, tag, side);
+        if (!plan) continue;
+        any = true;
+        slate.push(this.scorePlan(plan, params));
       }
-      slate.push(this.scorePlan(plan, params));
+      if (!any) misses.push(`${c.symbol}:no-viable-spread`);
     }
     slate.sort((a, b) => b.score - a.score);
 
@@ -306,8 +346,8 @@ export class EntryService {
     );
     slate.forEach((p, i) => {
       this.logger.log(
-        `${tag}:   [${i}] ${p.symbol} score ${p.score.toFixed(1)} | ` +
-          `${p.shortStrike}/${p.longStrike}P ${p.expiration} (${p.dte}d) | ` +
+        `${tag}:   [${i}] ${p.symbol} ${p.strategy} score ${p.score.toFixed(1)} | ` +
+          `${p.shortStrike}/${p.longStrike}${p.side} ${p.expiration} (${p.dte}d) | trend ${p.trend ?? '?'} | ` +
           `${p.contracts}x credit $${round2(p.credit * 100)} risk $${round2(p.riskPerShare * 100)} ` +
           `(total $${p.totalRisk}) c/w ${(p.creditToWidth * 100).toFixed(0)}% | delta ${p.shortDelta.toFixed(3)} | ` +
           `EM ${p.emMultiple ?? '?'}x | ` +
@@ -363,18 +403,18 @@ export class EntryService {
         const position = await this.paper.openFromSuggestion({
           account: arm.name,
           symbol: plan.symbol,
-          strategy: StrategyType.BULL_PUT_SPREAD,
+          strategy: plan.strategy,
           expiration: plan.expiration,
           legs: [
             {
               action: 'Sell to Open',
-              right: 'P',
+              right: plan.side,
               strike: plan.shortStrike,
               streamerSymbol: plan.shortStreamerSymbol,
             },
             {
               action: 'Buy to Open',
-              right: 'P',
+              right: plan.side,
               strike: plan.longStrike,
               streamerSymbol: plan.longStreamerSymbol,
             },
@@ -389,7 +429,7 @@ export class EntryService {
         openedId = position.id;
         attempts.push(`${plan.symbol}:OPENED#${position.id}`);
         this.logger.log(
-          `${tag}: OPENED ${plan.symbol} id=${position.id} score ${plan.score.toFixed(1)} ` +
+          `${tag}: OPENED ${plan.symbol} ${plan.strategy} ${plan.shortStrike}/${plan.longStrike}${plan.side} id=${position.id} score ${plan.score.toFixed(1)} ` +
             `${plan.contracts}x credit $${round2(plan.credit * 100 * plan.contracts)} ` +
             `risk $${plan.totalRisk} decision=${decision.id}`,
         );
@@ -549,7 +589,7 @@ export class EntryService {
     rejectedPick: SpreadPlan | null,
   ): string {
     return [
-      `${choice.source} entry (score ${plan.score.toFixed(1)}/100): ` +
+      `${choice.source} entry (score ${plan.score.toFixed(1)}/100): ${plan.strategy}, trend ${plan.trend ?? 'n/a'}, ` +
         `shortDelta ${plan.shortDelta.toFixed(3)}, width ${plan.width}, ` +
         `credit/width ${(plan.creditToWidth * 100).toFixed(0)}%, IVR ${plan.ivRank ?? 'n/a'}, ` +
         `sentiment +${plan.bullish ?? 0}/-${plan.bearish ?? 0}`,
@@ -572,15 +612,27 @@ export class EntryService {
    * This stays mechanical even for AI arms — the model chooses BETWEEN spreads,
    * it never builds one.
    */
+  /**
+   * Build one priced vertical on one side of the chain. `side` 'P' is a bull
+   * put spread (sell an OTM put, buy a further-OTM put); 'C' is a bear call
+   * spread (sell an OTM call, buy a further-OTM call). Every rule below is
+   * symmetric — "OTM", "further out" and the expected-move distance just flip
+   * sign — so the two sides share one implementation rather than two copies
+   * that drift apart.
+   */
   private planFromSnapshot(
     c: ShortlistCandidate,
     snap: any,
     params: ArmParams,
     riskBudget: number,
     tag: string,
+    side: 'P' | 'C',
   ): UnscoredPlan | null {
     const spot = Number(snap?.underlyingPrice);
     const contracts: any[] = snap?.contracts ?? [];
+    const label = `${c.symbol} ${side === 'P' ? 'put' : 'call'} side`;
+    // +1 for puts (OTM is BELOW spot), -1 for calls (OTM is ABOVE spot).
+    const dir = side === 'P' ? 1 : -1;
     // Spot is the equity NBBO mid. Every downstream number — which strikes are
     // OTM, the expected-move distance, the width cap — keys off it, so a wide
     // quote (after-hours, halted, weekend) is disqualifying, not a rounding
@@ -591,27 +643,44 @@ export class EntryService {
       const rel = (uAsk - uBid) / spot;
       if (rel > MAX_UNDERLYING_QUOTE_REL) {
         this.logger.warn(
-          `${tag}: ${c.symbol} — underlying quote ${uBid}/${uAsk} is ${(rel * 100).toFixed(1)}% wide; ` +
+          `${tag}: ${label} — underlying quote ${uBid}/${uAsk} is ${(rel * 100).toFixed(1)}% wide; ` +
             `mid ${spot} is not a usable spot (market closed or halted?). skipping`,
         );
         return null;
       }
     }
     if (!spot || contracts.length < 2) {
-      this.logger.warn(`${tag}: ${c.symbol} — no usable chain snapshot`);
+      this.logger.warn(`${tag}: ${label} — no usable chain snapshot`);
       return null;
     }
 
-    // OTM puts with a live two-sided quote and a delta.
-    const puts = contracts
-      .filter((x) => x?.put && x.strike < spot)
+    // Ex-dividend guard for short calls (01 D1): never carry a short call on a
+    // dividend-paying ETF through its ex-date. The big index and sector ETFs
+    // go ex on (about) the third Friday of Mar/Jun/Sep/Dec; if that date falls
+    // inside this expiry's life, no call spread today. Single names are not
+    // covered by this rule yet — their dates need the dividends endpoint.
+    if (side === 'C' && QUARTERLY_EX_DIV_ETFS.has(c.symbol)) {
+      const exDiv = nextQuarterlyExDiv(new Date());
+      if (exDiv <= String(snap.expiration)) {
+        this.logger.log(
+          `${tag}: ${label} — quarterly ex-dividend ~${exDiv} falls inside expiry ${snap.expiration}; ` +
+            `no short calls through an ex-date (01 D1); skipping`,
+        );
+        return null;
+      }
+    }
+
+    // OTM options on this side with a live two-sided quote and a delta.
+    const legsKey = side === 'P' ? 'put' : 'call';
+    const otm = contracts
+      .filter((x) => x?.[legsKey] && (side === 'P' ? x.strike < spot : x.strike > spot))
       .map((x) => ({
         strike: Number(x.strike),
-        streamerSymbol: x.put.streamerSymbol as string | undefined,
-        delta: Number(x.put.delta),
-        iv: Number(x.put.iv),
-        bid: Number(x.put.bid),
-        ask: Number(x.put.ask),
+        streamerSymbol: x[legsKey].streamerSymbol as string | undefined,
+        delta: Number(x[legsKey].delta),
+        iv: Number(x[legsKey].iv),
+        bid: Number(x[legsKey].bid),
+        ask: Number(x[legsKey].ask),
       }))
       .filter(
         (p) =>
@@ -620,12 +689,11 @@ export class EntryService {
           Number.isFinite(p.ask) &&
           p.ask > 0,
       )
-      .sort((a, b) => b.strike - a.strike);
+      // Nearest-the-money first on either side.
+      .sort((a, b) => dir * (b.strike - a.strike));
 
-    if (puts.length < 2) {
-      this.logger.warn(
-        `${tag}: ${c.symbol} — only ${puts.length} quotable OTM puts, skipping`,
-      );
+    if (otm.length < 2) {
+      this.logger.warn(`${tag}: ${label} — only ${otm.length} quotable OTM strikes, skipping`);
       return null;
     }
 
@@ -638,13 +706,15 @@ export class EntryService {
     // prefer the >= 1.0x tier, and take the one closest to target within the
     // tier. That lands on the ~0.16-0.20Δ strike the rules actually want.
     const dte = Number(snap.dte);
-    const eligible = puts
+    const emOf = (iv: number) =>
+      Number.isFinite(iv) && iv > 0 && dte > 0 ? round2(spot * iv * Math.sqrt(dte / 365)) : null;
+    const distance = (strike: number) => dir * (spot - strike); // positive = OTM
+    const eligible = otm
       .map((p) => {
         const absDelta = Math.abs(p.delta);
-        const hasIv = Number.isFinite(p.iv) && p.iv > 0 && dte > 0;
-        const expectedMove = hasIv ? round2(spot * p.iv * Math.sqrt(dte / 365)) : null;
+        const expectedMove = emOf(p.iv);
         const emMultiple =
-          expectedMove && expectedMove > 0 ? round2((spot - p.strike) / expectedMove) : null;
+          expectedMove && expectedMove > 0 ? round2(distance(p.strike) / expectedMove) : null;
         return { ...p, absDelta, expectedMove, emMultiple };
       })
       .filter((p) => p.absDelta >= params.minShortDelta && p.absDelta <= params.maxShortDelta)
@@ -656,19 +726,17 @@ export class EntryService {
     const pool = preferred.length ? preferred : eligible;
 
     if (!pool.length) {
-      const nearest = puts.reduce((best, p) =>
+      const nearest = otm.reduce((best, p) =>
         Math.abs(Math.abs(p.delta) - params.targetDelta) <
         Math.abs(Math.abs(best.delta) - params.targetDelta)
           ? p
           : best,
       );
-      const nIv = Number.isFinite(nearest.iv) && nearest.iv > 0 && dte > 0
-        ? round2(spot * nearest.iv * Math.sqrt(dte / 365))
-        : null;
+      const nIv = emOf(nearest.iv);
       this.logger.log(
-        `${tag}: ${c.symbol} — no strike satisfies Δ ${params.minShortDelta}-${params.maxShortDelta} ` +
-          `AND >= ${params.minEmMultiple}x EM (${params.preferredEmMultiple}x preferred); nearest to target is ${nearest.strike}P ` +
-          `(${Math.abs(nearest.delta).toFixed(2)}Δ, ${nIv ? `${round2((spot - nearest.strike) / nIv)}x EM $${nIv}` : 'no IV'}); skipping`,
+        `${tag}: ${label} — no strike satisfies Δ ${params.minShortDelta}-${params.maxShortDelta} ` +
+          `AND >= ${params.minEmMultiple}x EM (${params.preferredEmMultiple}x preferred); nearest to target is ${nearest.strike}${side} ` +
+          `(${Math.abs(nearest.delta).toFixed(2)}Δ, ${nIv ? `${round2(distance(nearest.strike) / nIv)}x EM $${nIv}` : 'no IV'}); skipping`,
       );
       return null;
     }
@@ -683,8 +751,8 @@ export class EntryService {
     const emMultiple = short.emMultiple;
     if (!preferred.length) {
       this.logger.log(
-        `${tag}: ${c.symbol} — no strike in the delta band clears ${params.preferredEmMultiple}x EM; ` +
-          `using ${short.strike}P at ${emMultiple}x (>= ${params.minEmMultiple}x minimum)`,
+        `${tag}: ${label} — no strike in the delta band clears ${params.preferredEmMultiple}x EM; ` +
+          `using ${short.strike}${side} at ${emMultiple}x (>= ${params.minEmMultiple}x minimum)`,
       );
     }
 
@@ -692,31 +760,31 @@ export class EntryService {
     // arm's risk budget, deployed by SCALING CONTRACTS on playbook-shaped
     // strikes rather than by widening the spread — credit/width falls as
     // width grows, so "widest that fits" would build thin-credit spreads the
-    // 25% floor then rejects. Instead: among long strikes within widthPct of
+    // floor then rejects. Instead: among long strikes within widthPct of
     // spot, take the width with the BEST credit/width that still clears the
     // gross-credit fee gate (ties go wider — more absolute credit per lot),
     // then contracts = floor(budget / (risk per contract + round-trip fees)),
     // capped at maxContracts. Risk is width − credit (01 §4), never width.
     const maxWidth = spot * params.widthPct;
     const shortMid = (short.bid + short.ask) / 2;
-    const longs = puts
-      .filter((p) => p.strike < short.strike && short.strike - p.strike <= maxWidth)
+    const widths = otm
+      .filter((p) => dir * (short.strike - p.strike) > 0 && dir * (short.strike - p.strike) <= maxWidth)
       .map((cand) => {
-        const width = round2(short.strike - cand.strike);
+        const width = round2(dir * (short.strike - cand.strike));
         const credit = shortMid - (cand.bid + cand.ask) / 2;
         return { cand, width, credit, creditToWidth: credit / width, risk: width - credit };
       })
       .filter((w) => w.credit > 0 && w.credit >= params.minCreditAbs);
-    if (!longs.length) {
-      const nearest = puts.find((p) => p.strike < short.strike);
+    if (!widths.length) {
+      const nearest = otm.find((p) => dir * (short.strike - p.strike) > 0);
       this.logger.log(
-        `${tag}: ${c.symbol} — no width within $${round2(maxWidth)} of short ${short.strike}P pays ` +
+        `${tag}: ${label} — no width within $${round2(maxWidth)} of short ${short.strike}${side} pays ` +
           `>= $${params.minCreditAbs} gross (fee gate); ` +
-          `nearest long ${nearest ? `${nearest.strike}P pays $${round2(shortMid - (nearest.bid + nearest.ask) / 2)}` : 'none'}; skipping`,
+          `nearest long ${nearest ? `${nearest.strike}${side} pays $${round2(shortMid - (nearest.bid + nearest.ask) / 2)}` : 'none'}; skipping`,
       );
       return null;
     }
-    const best = longs.reduce((a, b) =>
+    const best = widths.reduce((a, b) =>
       b.creditToWidth > a.creditToWidth + 1e-9 ||
       (Math.abs(b.creditToWidth - a.creditToWidth) <= 1e-9 && b.width > a.width)
         ? b
@@ -727,7 +795,7 @@ export class EntryService {
     const lots = Math.min(params.maxContracts, Math.floor(riskBudget / riskPerContract));
     if (lots < 1) {
       this.logger.warn(
-        `${tag}: ${c.symbol} — one ${short.strike}/${long.strike}P risks $${round2(riskPerContract)} ` +
+        `${tag}: ${label} — one ${short.strike}/${long.strike}${side} risks $${round2(riskPerContract)} ` +
           `incl. fees, over the $${round2(riskBudget)} budget; skipping`,
       );
       return null;
@@ -745,7 +813,7 @@ export class EntryService {
     //     noise against the credit collected. Requiring both stops us rejecting
     //     perfectly tradeable spreads over their cheapest leg.
     const relSpreads: number[] = [];
-    for (const [label, leg] of [
+    for (const [which, leg] of [
       ['short', short],
       ['long', long],
     ] as const) {
@@ -753,7 +821,7 @@ export class EntryService {
       const abs = leg.ask - leg.bid;
       if (leg.bid <= 0 || mid <= 0) {
         this.logger.warn(
-          `${tag}: ${c.symbol} — ${label} leg ${leg.strike}P has no bid ` +
+          `${tag}: ${label} — ${which} leg ${leg.strike}${side} has no bid ` +
             `(${leg.bid}/${leg.ask}), untradeable; skipping`,
         );
         return null;
@@ -761,7 +829,7 @@ export class EntryService {
       const rel = abs / mid;
       if (rel > params.maxQuoteSpreadPct && abs > params.maxQuoteSpreadAbs) {
         this.logger.warn(
-          `${tag}: ${c.symbol} — ${label} leg ${leg.strike}P quote too wide ` +
+          `${tag}: ${label} — ${which} leg ${leg.strike}${side} quote too wide ` +
             `(${leg.bid}/${leg.ask} = $${round2(abs)}, ${(rel * 100).toFixed(0)}%); skipping`,
         );
         return null;
@@ -769,29 +837,16 @@ export class EntryService {
       relSpreads.push(rel);
     }
 
-    const credit = (short.bid + short.ask) / 2 - (long.bid + long.ask) / 2;
-    const actualWidth = round2(short.strike - long.strike);
+    const credit = best.credit;
+    const actualWidth = best.width;
     const creditToWidth = credit / actualWidth;
 
-    if (credit <= 0) {
-      this.logger.warn(`${tag}: ${c.symbol} — non-positive credit, skipping`);
-      return null;
-    }
-    // Fee gate (01 A6): a $0.20 credit on a $2.50 round trip is 12.5% drag
-    // before the trade has done anything. Gross floor, per share.
-    if (credit < params.minCreditAbs) {
-      this.logger.log(
-        `${tag}: ${c.symbol} — gross credit $${round2(credit)} below $${params.minCreditAbs} ` +
-          `minimum (fee gate); skipping`,
-      );
-      return null;
-    }
-    // Credit/width (02 T4): hard floor, and a target above it. In between is
-    // allowed only when the short strike is far enough out that being paid
-    // less is justified (|Δ| <= thinCreditMaxDelta).
+    // Credit/width (02 T4, re-tuned for verticals 2026-09-16): hard floor, and
+    // a target above it. In between is allowed only when the short strike is
+    // far enough out that being paid less is justified (|Δ| <= thinCreditMaxDelta).
     if (creditToWidth < params.minCreditToWidth) {
       this.logger.log(
-        `${tag}: ${c.symbol} — credit/width ${(creditToWidth * 100).toFixed(0)}% ` +
+        `${tag}: ${label} — credit/width ${(creditToWidth * 100).toFixed(0)}% ` +
           `below the ${(params.minCreditToWidth * 100).toFixed(0)}% floor — skipping`,
       );
       return null;
@@ -801,7 +856,7 @@ export class EntryService {
       round2(shortAbsDelta) > params.thinCreditMaxDelta
     ) {
       this.logger.log(
-        `${tag}: ${c.symbol} — credit/width ${(creditToWidth * 100).toFixed(0)}% is under the ` +
+        `${tag}: ${label} — credit/width ${(creditToWidth * 100).toFixed(0)}% is under the ` +
           `${(params.targetCreditToWidth * 100).toFixed(0)}% target and short Δ ${shortAbsDelta.toFixed(2)} ` +
           `> ${params.thinCreditMaxDelta} (thin credit needs a further strike) — skipping`,
       );
@@ -810,6 +865,9 @@ export class EntryService {
 
     return {
       symbol: c.symbol,
+      side,
+      strategy: side === 'P' ? StrategyType.BULL_PUT_SPREAD : StrategyType.BEAR_CALL_SPREAD,
+      trend: c.trend ?? null,
       correlationGroup: c.correlationGroup,
       expiration: String(snap.expiration),
       dte,

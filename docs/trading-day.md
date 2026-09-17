@@ -100,7 +100,8 @@ thing doing arithmetic.
 
 **Stage 1 — build a slate (always mechanical).** Take the top `ENTRY_SLATE_SIZE`
 (5) candidates off the pre-market shortlist, skipping symbols already held, and
-price them **in parallel**. Each is an ~8s DXLink chain snapshot, so five
+price them **in parallel**. Each is built on the side its pre-market trend read
+favours — bull put above the 20-day mean, bear call below, both when flat. Each is an ~8s DXLink chain snapshot, so five
 sequentially would burn 40s of a 15-minute entry cadence — parallel makes it ~9s, which is
 what makes best-of affordable at all. For each: short strike = OTM put nearest
 `ENTRY_TARGET_DELTA`, long strike = widest that fits the risk budget, both legs
@@ -143,7 +144,7 @@ paper account plus a `config` blob of overrides on the `ENTRY_*` defaults —
 |---|---|---|
 | `mech` | `{"selector":"mechanical"}` | Baseline — highest deterministic score, playbook-strict credit gates |
 | `ai` | `{"selector":"ai"}` | Claude picks from the same scored slate |
-| `mech-relaxed` | `{"selector":"mechanical","minCreditToWidth":0.18,"minCreditAbs":0.2,"thinCreditMaxDelta":0.25}` | Same funnel with the credit floor relaxed — measures what the playbook's 25 % floor costs (see strategy-methodology.md "Known tension") |
+| `mech-strict` | `{"selector":"mechanical","minCreditToWidth":0.25,"targetCreditToWidth":0.33,"minCreditAbs":0.3,"thinCreditMaxDelta":0.2}` | Same funnel pinned to the playbook's credit gates — the control for the vertical-tuned defaults (see strategy-methodology.md "Known tension") |
 | `research` | `{"selector":"agent"}` | Claude agent with web research; builds its own structures |
 
 Each arm keeps its **own book**, starting from the same $2,500. That's the point:
