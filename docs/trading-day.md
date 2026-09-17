@@ -16,23 +16,22 @@ schedule" below).
 
 ## Position sizing (drives everything else)
 
-**Playbook RULES S1–S5** (`01-account-and-capital-rules.md §5`): max loss per
-position **5 % of NLV** ($125 on $2,500 including fees), total risk in use
-**30 %**, **5** positions, **1 per underlying**, **2 per correlated group**, one
-contract per leg. Seeded into `risk_config` by migration `1788720000000`.
+**Two positions, up to half of NLV each** (Geoff's 2026-09-16 override of
+playbook 01 §5): `maxConcurrentPositions` 2, `maxRiskPerTradePct` 50,
+`maxPortfolioRiskPct` 100, **1 per underlying, 1 per correlated group**.
+Seeded into `risk_config` by migration `1788740000000`.
 
 Two consequences worth internalizing:
 
-1. **It sets the tradeable universe.** Spread risk = `(width − credit) × 100`, so
-   $125 buys a **$1-wide spread on SPY, $2-wide only if it pays ≥ $0.78**. The
-   credit floor (25 % of width) and the $0.30 gross minimum then decide whether
-   the trade exists at all — many days it will not. Cheap underlyings are not a
-   way around this: a $40 ETF's $1-wide spread has the same dollar risk with a
-   thinner market.
-2. **Correlation is still the real risk.** SPY/XSP/QQQ/XND/IWM are one bet in a
-   selloff. Every watchlist row carries a **`correlationGroup`** and the gate
-   enforces **`maxPerCorrelationGroup: 2`** (playbook S5); `maxPerUnderlying: 1`
-   alone wouldn't stop three correlated index spreads.
+1. **Size is contracts, not width.** Spread risk = `(width − credit) × 100 ×
+   contracts`. The entry engine picks the width with the best credit/width
+   that clears the fee gate and scales contracts to the budget (cap
+   `ENTRY_MAX_CONTRACTS`), so a $1,250 budget is ~7 lots of a $2-wide, not one
+   $20-wide. The 25 % credit floor still decides whether the trade exists.
+2. **Correlation is the whole risk at this size.** SPY/XSP/QQQ/XND/IWM are one
+   bet in a selloff, and two positions at 50 % each is the entire account. The
+   gate enforces **`maxPerCorrelationGroup: 1`**, so the two positions must
+   come from different `correlationGroup`s.
 
 ### ETF groups are tight; single stocks are intentionally ungrouped
 

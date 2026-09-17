@@ -39,6 +39,13 @@ export interface ArmParams {
   targetDte: number;
   minDte: number;
   maxDte: number;
+  /**
+   * Sizing: contracts = floor(riskBudget / (risk per contract + fees)), capped
+   * here. The 2026-09-16 sizing policy (2 positions, 50% of NLV each) is
+   * deployed by scaling contracts on playbook-shaped strikes, not by widening
+   * the spread — credit/width collapses on wide spreads.
+   */
+  maxContracts: number;
   maxNewPerRun: number;
   maxQuoteSpreadPct: number;
   /**
@@ -78,6 +85,10 @@ export interface SpreadPlan {
   shortStreamerSymbol?: string;
   longStreamerSymbol?: string;
   shortDelta: number;
+  /** Contracts per leg — sized to the arm's risk budget (see ArmParams.maxContracts). */
+  contracts: number;
+  /** Defined risk for the whole position in dollars: riskPerShare x 100 x contracts. */
+  totalRisk: number;
   /** 1-SD expected move to expiry ($), from the short strike's IV: S·σ·√(DTE/365). */
   expectedMove: number | null;
   /** (spot − shortStrike) / expectedMove — how many SDs OTM the short strike sits. */

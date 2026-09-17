@@ -35,6 +35,7 @@ export interface ArmConfig {
   preferredEmMultiple?: number;
   minDte?: number;
   maxDte?: number;
+  maxContracts?: number;
   /** Exit policy — an A/B variable exactly like entry policy (see ExitThresholds). */
   profitTargetPct?: number;
   accelProfitTargetPct?: number;

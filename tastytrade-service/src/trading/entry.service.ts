@@ -110,6 +110,7 @@ export class EntryService {
       targetDte: num(config.get('ENTRY_TARGET_DTE'), 10),
       minDte: num(config.get('ENTRY_MIN_DTE'), 7),
       maxDte: num(config.get('ENTRY_MAX_DTE'), 14),
+      maxContracts: num(config.get('ENTRY_MAX_CONTRACTS'), 10),
       maxNewPerRun: num(config.get('ENTRY_MAX_NEW_PER_RUN'), 1),
       maxQuoteSpreadPct: num(config.get('ENTRY_MAX_QUOTE_SPREAD_PCT'), 0.5),
       maxQuoteSpreadAbs: num(config.get('ENTRY_MAX_QUOTE_SPREAD_ABS'), 0.1),
@@ -307,8 +308,8 @@ export class EntryService {
       this.logger.log(
         `${tag}:   [${i}] ${p.symbol} score ${p.score.toFixed(1)} | ` +
           `${p.shortStrike}/${p.longStrike}P ${p.expiration} (${p.dte}d) | ` +
-          `credit $${round2(p.credit * 100)} risk $${round2(p.riskPerShare * 100)} ` +
-          `c/w ${(p.creditToWidth * 100).toFixed(0)}% | delta ${p.shortDelta.toFixed(3)} | ` +
+          `${p.contracts}x credit $${round2(p.credit * 100)} risk $${round2(p.riskPerShare * 100)} ` +
+          `(total $${p.totalRisk}) c/w ${(p.creditToWidth * 100).toFixed(0)}% | delta ${p.shortDelta.toFixed(3)} | ` +
           `EM ${p.emMultiple ?? '?'}x | ` +
           `IVR ${p.ivRank ?? 'n/a'} | qspread ${(p.avgRelSpread * 100).toFixed(1)}% | ` +
           `parts r/r=${p.scoreParts.creditToWidth.toFixed(2)} d=${p.scoreParts.deltaFit.toFixed(2)} ` +
@@ -380,7 +381,7 @@ export class EntryService {
           ],
           creditPerSpread: round2(plan.credit),
           maxRiskPerSpread: round2(plan.riskPerShare),
-          contracts: 1,
+          contracts: plan.contracts,
           decisionId: decision.id,
           notes: this.buildNotes(plan, choice, isFallback ? slate[choice.pick] : null),
         });
@@ -389,8 +390,8 @@ export class EntryService {
         attempts.push(`${plan.symbol}:OPENED#${position.id}`);
         this.logger.log(
           `${tag}: OPENED ${plan.symbol} id=${position.id} score ${plan.score.toFixed(1)} ` +
-            `credit $${round2(plan.credit * 100)} risk $${round2(plan.riskPerShare * 100)} ` +
-            `decision=${decision.id}`,
+            `${plan.contracts}x credit $${round2(plan.credit * 100 * plan.contracts)} ` +
+            `risk $${plan.totalRisk} decision=${decision.id}`,
         );
       } catch (err) {
         // Risk gate rejections land here and are expected, not failures.
@@ -687,36 +688,47 @@ export class EntryService {
       );
     }
 
-    // Width: risk-budgeted and capped by % of spot. The budget is on RISK,
-    // which is width − credit (01 §4, RULE A8: max_loss = BPR + fees), not on
-    // width — a $2-wide paying $0.78 has $122 of risk and fits a $125 cap
-    // (01 §10's worked example), while a width cap would stop at $1. Walk the
-    // long strikes from widest inward and take the first whose risk fits;
-    // quotes are sparse (thin books, holidays) so don't demand an exact strike.
+    // Width and size. Sizing policy (2026-09-16): a trade may use up to the
+    // arm's risk budget, deployed by SCALING CONTRACTS on playbook-shaped
+    // strikes rather than by widening the spread — credit/width falls as
+    // width grows, so "widest that fits" would build thin-credit spreads the
+    // 25% floor then rejects. Instead: among long strikes within widthPct of
+    // spot, take the width with the BEST credit/width that still clears the
+    // gross-credit fee gate (ties go wider — more absolute credit per lot),
+    // then contracts = floor(budget / (risk per contract + round-trip fees)),
+    // capped at maxContracts. Risk is width − credit (01 §4), never width.
     const maxWidth = spot * params.widthPct;
-    const budgetPerShare = (riskBudget - ROUND_TRIP_FEES_2LEG) / 100;
     const shortMid = (short.bid + short.ask) / 2;
     const longs = puts
       .filter((p) => p.strike < short.strike && short.strike - p.strike <= maxWidth)
-      .sort((a, b) => a.strike - b.strike); // lowest strike = widest spread first
-    let long: (typeof puts)[number] | undefined;
-    let tooRich: string | null = null;
-    for (const cand of longs) {
-      const width = short.strike - cand.strike;
-      const credit = shortMid - (cand.bid + cand.ask) / 2;
-      const risk = width - credit;
-      if (risk <= budgetPerShare) {
-        long = cand;
-        break;
-      }
-      tooRich ??= `${short.strike}/${cand.strike}P risks $${round2(risk * 100)}`;
-    }
-    if (!long) {
+      .map((cand) => {
+        const width = round2(short.strike - cand.strike);
+        const credit = shortMid - (cand.bid + cand.ask) / 2;
+        return { cand, width, credit, creditToWidth: credit / width, risk: width - credit };
+      })
+      .filter((w) => w.credit > 0 && w.credit >= params.minCreditAbs);
+    if (!longs.length) {
       const nearest = puts.find((p) => p.strike < short.strike);
+      this.logger.log(
+        `${tag}: ${c.symbol} — no width within $${round2(maxWidth)} of short ${short.strike}P pays ` +
+          `>= $${params.minCreditAbs} gross (fee gate); ` +
+          `nearest long ${nearest ? `${nearest.strike}P pays $${round2(shortMid - (nearest.bid + nearest.ask) / 2)}` : 'none'}; skipping`,
+      );
+      return null;
+    }
+    const best = longs.reduce((a, b) =>
+      b.creditToWidth > a.creditToWidth + 1e-9 ||
+      (Math.abs(b.creditToWidth - a.creditToWidth) <= 1e-9 && b.width > a.width)
+        ? b
+        : a,
+    );
+    const long = best.cand;
+    const riskPerContract = best.risk * 100 + ROUND_TRIP_FEES_2LEG;
+    const lots = Math.min(params.maxContracts, Math.floor(riskBudget / riskPerContract));
+    if (lots < 1) {
       this.logger.warn(
-        `${tag}: ${c.symbol} — no long strike fits the risk budget ` +
-          `($${round2(riskBudget)} less $${ROUND_TRIP_FEES_2LEG} fees; short ${short.strike}, ` +
-          `${tooRich ?? `nearest below ${nearest ? nearest.strike : 'none'}`})`,
+        `${tag}: ${c.symbol} — one ${short.strike}/${long.strike}P risks $${round2(riskPerContract)} ` +
+          `incl. fees, over the $${round2(riskBudget)} budget; skipping`,
       );
       return null;
     }
@@ -809,6 +821,8 @@ export class EntryService {
       shortDelta: short.delta,
       expectedMove,
       emMultiple,
+      contracts: lots,
+      totalRisk: round2((actualWidth - credit) * 100 * lots),
       width: actualWidth,
       credit,
       riskPerShare: round2(actualWidth - credit),

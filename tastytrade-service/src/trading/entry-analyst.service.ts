@@ -226,7 +226,7 @@ export class EntryAnalystService {
           `    underlying ${p.underlyingPrice}, short strike is ${pct((p.underlyingPrice - p.shortStrike) / p.underlyingPrice)} below spot`,
           `    short delta ${p.shortDelta.toFixed(3)}, width ${p.width}` +
             (p.emMultiple !== null ? `, short strike ${p.emMultiple}x the 1-SD expected move ($${p.expectedMove})` : ''),
-          `    credit $${(p.credit * 100).toFixed(0)} / max risk $${(p.riskPerShare * 100).toFixed(0)} (credit is ${pct(p.creditToWidth)} of width)`,
+          `    ${p.contracts} contract(s): credit $${(p.credit * 100 * p.contracts).toFixed(0)} / max risk $${p.totalRisk.toFixed(0)} (credit is ${pct(p.creditToWidth)} of width)`,
           `    IV rank ${p.ivRank ?? 'n/a'}, quote spread ${pct(p.avgRelSpread)}, StockTwits ${sentiment}`,
           `    deterministic score ${p.score.toFixed(1)}/100 ` +
             `(r/r ${p.scoreParts.creditToWidth.toFixed(2)}, delta fit ${p.scoreParts.deltaFit.toFixed(2)}, ` +

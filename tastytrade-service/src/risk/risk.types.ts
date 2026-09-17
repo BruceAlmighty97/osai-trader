@@ -26,36 +26,37 @@ export interface RiskRules {
 }
 
 /**
- * Playbook profile (docs/playbook/01-account-and-capital-rules.md §5, RULES
- * S1-S5): max loss per position 5% of NLV ($125 on $2,500), total buying power
- * in use 30%, five positions, one per underlying, two per correlated group.
- * Capital preservation first — at 7-14 DTE a single gap can take a position to
- * max loss, so no one position may be more than the account's daily loss
- * budget. Migration 1788720000000 applies the same values to the seeded row.
+ * Concentrated profile (Geoff, 2026-09-16): TWO positions, each allowed up to
+ * HALF of NLV, one per underlying and one per correlated group so the two are
+ * never the same bet. This overrides the playbook's 01 §5 sizing (5% / 30% /
+ * five positions) — a deliberate choice, made knowing a single max-loss
+ * outcome takes half the account. Deployed by scaling contracts on
+ * playbook-shaped strikes (see EntryService), never by widening the spread.
+ * Migration 1788740000000 applies the same values to the seeded row.
  *
- * Not yet here (later stages): 20% BP cap when VIX >= 30 (S3), the greek caps
- * (03 §4.2) and the kill switches (01 §9).
+ * With this much per position the kill switches (01 §9, stage 4) matter more,
+ * not less.
  */
 export const DEFAULT_RULES: RiskRules = {
-  maxConcurrentPositions: 5,
-  maxRiskPerTradePct: 5,
-  maxPortfolioRiskPct: 30,
+  maxConcurrentPositions: 2,
+  maxRiskPerTradePct: 50,
+  maxPortfolioRiskPct: 100,
   maxPerUnderlying: 1,
-  maxPerCorrelationGroup: 2,
+  maxPerCorrelationGroup: 1,
   killSwitch: false,
 };
 
 /** Partial update of the risk rules (any subset). */
 export class UpdateRulesDto {
-  @ApiPropertyOptional({ example: 5 })
+  @ApiPropertyOptional({ example: 2 })
   maxConcurrentPositions?: number;
-  @ApiPropertyOptional({ example: 5, description: '% of capital base' })
+  @ApiPropertyOptional({ example: 50, description: '% of capital base' })
   maxRiskPerTradePct?: number;
-  @ApiPropertyOptional({ example: 30, description: '% of capital base' })
+  @ApiPropertyOptional({ example: 100, description: '% of capital base' })
   maxPortfolioRiskPct?: number;
   @ApiPropertyOptional({ example: 1 })
   maxPerUnderlying?: number;
-  @ApiPropertyOptional({ example: 2, description: 'per watchlist correlationGroup' })
+  @ApiPropertyOptional({ example: 1, description: 'per watchlist correlationGroup' })
   maxPerCorrelationGroup?: number;
   @ApiPropertyOptional({ example: false })
   killSwitch?: boolean;

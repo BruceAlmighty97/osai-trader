@@ -23,9 +23,9 @@ it positive.
 | Rule (00-README canonical table) | Value | Enforced in | Status |
 |---|---|---|---|
 | Expiration at entry | 7–14 DTE (target 10) | `EntryService` (`ENTRY_MIN/MAX/TARGET_DTE`, DTE-windowed chain snapshot); `ResearchExecutionService` (`RESEARCH_MIN/MAX_DTE`) | ✅ |
-| Max loss per position | ≤ 5 % of NLV | `risk_config` rules (`maxRiskPerTradePct`), migration `1788720000000` | ✅ |
-| Buying power in use | ≤ 30 % of NLV (20 % when VIX ≥ 30) | `maxPortfolioRiskPct` 30 | ✅ / VIX variant ❌ |
-| Concurrent positions | 5; 1 per underlying; 2 per correlated group; 1 contract | `maxConcurrentPositions`, `maxPerUnderlying`, `maxPerCorrelationGroup`; entry always opens 1 contract | ✅ |
+| Max loss per position | playbook ≤ 5 % of NLV — **overridden 2026-09-16 to 50 %** | `risk_config` rules (`maxRiskPerTradePct`), migration `1788740000000` | ⚠️ deliberate override |
+| Buying power in use | playbook ≤ 30 % — **overridden to 100 %** (2 × 50 %) | `maxPortfolioRiskPct` | ⚠️ deliberate override |
+| Concurrent positions | playbook 5 / 2 per group / 1 contract — **overridden to 2 positions, 1 per group, contracts scaled to budget** (cap `ENTRY_MAX_CONTRACTS` 10) | `maxConcurrentPositions`, `maxPerCorrelationGroup`; `EntryService` sizes contracts | ⚠️ deliberate override |
 | Short-strike delta | 0.15–0.25, target 0.20 (never > 0.30) | `ENTRY_MIN/MAX_SHORT_DELTA`, `ENTRY_TARGET_DELTA` | ✅ |
 | Short strike vs expected move | ≥ 1.0 × EM preferred, 0.8 × minimum (02 T5); 1.5 × in VIX 20–30 | `ENTRY_PREFERRED_EM_MULTIPLE` / `ENTRY_MIN_EM_MULTIPLE`; EM from the strike's own IV | ✅ / VIX variant ❌ |
 | Credit / width | ≥ 33 % target, 25 % hard floor (25–33 % only with short Δ ≤ 0.20) | `ENTRY_MIN_CREDIT_RATIO`, `ENTRY_TARGET_CREDIT_RATIO`, `ENTRY_THIN_CREDIT_MAX_DELTA` | ✅ |
@@ -57,9 +57,12 @@ it positive.
    wants rather than rejecting the chain. The underlying's own quote must be
    ≤ 0.5 % wide or the candidate is skipped — a stale mid corrupts every
    downstream number.
-3. **Long strike.** Widest whose **risk** (`width − credit`, plus $2.50 of
-   round-trip fees) fits the budget `5 % × NLV`. In practice $1-wide on
-   SPY-priced underlyings unless the credit is rich, $2 on cheaper ones.
+3. **Long strike and size.** Among widths within `ENTRY_WIDTH_PCT` of spot,
+   take the one with the best credit/width that clears the $0.30 gross gate
+   (ties go wider); then `contracts = floor(budget / (risk per contract +
+   $2.50 fees))`, capped at `ENTRY_MAX_CONTRACTS`. Risk is `width − credit`,
+   never width. Scaling contracts rather than widening keeps playbook-shaped
+   strikes — a wide spread pays a thinner credit/width and fails the floor.
 4. **Credit gates.** Gross ≥ $0.30; credit/width ≥ 25 %; if < 33 % the short Δ
    must be ≤ 0.20.
 5. **Quote gates** are unchanged (no-bid hard reject; wide only if wide in both
@@ -91,13 +94,21 @@ Stage 0 ships `mech`/`ai` playbook-strict and adds a **`mech-relaxed`** arm
 cost of the floor is measured as an A/B rather than loosened silently. Judge it
 on the decision log and loser size, not on a few weeks of P&L.
 
-## Sizing reality on $2,500
+## Sizing policy (2026-09-16): two positions, half the account each
 
-`5 % × $2,500 = $125` max loss including ~$2.50 of fees, and the budget is on
-**risk = width − credit**, not width. A $2-wide spread must collect ≥ $0.78 to
-fit; a $1-wide fits at any credit. The realistic book is 1–3 one-lot $1–2-wide
-verticals, and index condors only when both wings fit inside $125. Playbook
-`01 §10` has the worked example; `01 §5` notes $3–5 widths need NLV ≥ $4,000.
+Geoff's override of playbook 01 §5: **`maxConcurrentPositions` 2,
+`maxRiskPerTradePct` 50, `maxPortfolioRiskPct` 100, one per underlying and
+one per correlated group** so the pair is never the same bet. The budget is
+deployed by scaling contracts: on synthetic chains a $1,250 budget builds
+**7 × $2-wide SPY spreads, ~$270 credit against ~$1,130 risk** when the
+credit gates pass. A single max-loss outcome takes half the account; two
+take all of it — the kill switches (01 §9, stage 4) are the counterweight
+and should follow soon.
+
+Note the size change does **not** unblock the strict arms: credit/width at
+≤ 0.25Δ is still 16–19 %, under the 25 % floor. Only `mech-relaxed` (18 %)
+trades verticals under this policy; the strict arms need the richer
+structures of stage 5.
 
 ## What the research arm does differently
 
