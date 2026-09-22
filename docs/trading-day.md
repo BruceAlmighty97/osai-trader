@@ -164,6 +164,12 @@ account too, so they aren't an experiment variable.
 - `GET /paper/account?account=ai`, `GET /paper/positions?account=ai|all`
 - Arms are rows: add one with an INSERT, disable one with `enabled=false`
 
+**Re-entry after a stop (02 §10, enforced 2026-09-22):** an arm that stopped
+out of a symbol today will not be offered that symbol again until the next
+session. On 2026-09-18 a JNJ bear call stopped at 17:40 and the next tick sold
+the same expiration again at 17:45; that pair plus a flip to the put side cost
+`mech` −$505 across three trades.
+
 **On reading the results:** at 4 concurrent positions and 45 DTE each arm closes
 only a handful of trades a month, and credit-spread P&L is dominated by the
 occasional big loser. P&L divergence over a few weeks is mostly noise — treat the
@@ -226,7 +232,7 @@ is what gets journaled as `exitReason`:
 
 1. `expired` — expiration reached with the position open (a missed exit, logged as such)
 2. `stop_loss` — unrealized loss ≥ 1 × max profit (= "mark ≥ 2× credit"), capped at 0.5 × max risk (rich-credit / debit variant)
-3. `stop_touch` — underlying printed at/through a short strike today (dxfeed Summary range, only when its `dayId` is today; plus last trade / mid)
+3. `stop_touch` — underlying printed at/through a short strike (today's dxfeed Summary range, plus last trade / mid). The **session range only counts for a position that was already open when the session began** — it covers prints from before an intraday entry, and on 2026-09-21 that closed three META positions within five minutes each on a low that happened hours before they existed
 4. `stop_delta` — short |Δ| ≥ 0.40 (0.35 condors); debit spreads: long |Δ| ≤ 0.20
 5. `profit_target` — 50 %, or 25 % at ≤ 3 DTE and always for iron flies
 6. `time_exit` — from 10:00 on the session two trading days before expiry (holidays skipped); immediately if missed. Legacy 45-DTE positions: `dte_roll` at 21 DTE

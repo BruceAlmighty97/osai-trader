@@ -14,6 +14,7 @@ import { DecisionEntity } from '../persistence/entities/decision.entity';
 import { PositionEntity } from '../persistence/entities/position.entity';
 import {
   DecisionTrigger,
+  ExitReason,
   PositionStatus,
   StrategyType,
 } from '../persistence/persistence.types';
@@ -51,6 +52,13 @@ function nextQuarterlyExDiv(now: Date): string {
   }
   return '9999-12-31';
 }
+
+/** Exits that mean "this thesis failed today" — see the re-entry rule in planArm. */
+const STOP_EXIT_REASONS = new Set<ExitReason>([
+  ExitReason.STOP_LOSS,
+  ExitReason.STOP_DELTA,
+  ExitReason.STOP_TOUCH,
+]);
 
 /** Widest (ask − bid) / mid on the UNDERLYING before its mid is distrusted as spot. */
 const MAX_UNDERLYING_QUOTE_REL = 0.005;
@@ -244,8 +252,28 @@ export class EntryService {
       return { arm, params, account, open, candidates: [], riskBudget, skip };
     }
 
+    // Re-entry rule (02 §10): a stop-out is closed and NOT re-chewed the same
+    // day in the same underlying. On 2026-09-18 a JNJ bear call stopped at
+    // 17:40 and the next tick sold the same expiration again at 17:45; that
+    // pair plus a flip to the put side cost -$505 over three trades. A new
+    // position after a stop is a new trade TOMORROW.
+    const today = etDate(new Date());
+    const closedToday = (await this.paper.listPositions(PositionStatus.CLOSED, arm.name)).filter(
+      (p) =>
+        p.closedAt &&
+        etDate(new Date(p.closedAt)) === today &&
+        STOP_EXIT_REASONS.has(p.exitReason as ExitReason),
+    );
+    const stoppedToday = new Set(closedToday.map((p) => p.symbol));
+    if (stoppedToday.size) {
+      this.logger.log(
+        `entry[${arm.name}]: skipping ${[...stoppedToday].join(', ')} — stopped out today, ` +
+          `no same-day re-entry (02 §10)`,
+      );
+    }
+
     const candidates = shortlist
-      .filter((c) => !held.has(c.symbol))
+      .filter((c) => !held.has(c.symbol) && !stoppedToday.has(c.symbol))
       .slice(0, params.slateSize);
 
     return { arm, params, account, open, candidates, riskBudget };

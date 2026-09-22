@@ -128,11 +128,20 @@ export function classifyExit(
   // 3. Price touch — any RTH print at/through a short strike. Today's session
   //    range catches a print between ticks; the last trade (or NBBO mid when
   //    there is none) catches where it sits now.
+  //
+  //    The range is only usable for a position that was ALREADY OPEN when the
+  //    session began. It covers the whole session, including prints from
+  //    before an intraday entry: on 2026-09-21 META rallied 679.60 -> 747 and
+  //    three positions opened at 737+ with short strikes near 695 were closed
+  //    within five minutes each, "touched" by a low that happened hours before
+  //    they existed. For a same-day entry only the current price is evidence;
+  //    the full range applies from the next session.
+  const openedToday = etDateOf(pos.openedAt) === ctx.today;
   if (isCredit) {
     for (const leg of pos.legs) {
       if (!/sell/i.test(leg.action)) continue;
-      const hi = pos.underlyingDayHigh;
-      const lo = pos.underlyingDayLow;
+      const hi = openedToday ? null : pos.underlyingDayHigh;
+      const lo = openedToday ? null : pos.underlyingDayLow;
       const now = pos.underlyingLast ?? pos.underlyingPrice;
       if (leg.right === 'P') {
         const touched = (lo !== null && lo <= leg.strike) || (now !== null && now <= leg.strike);
@@ -226,4 +235,16 @@ export function timeStopDate(
 
 function r2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/** ET calendar date of an ISO instant, 'YYYY-MM-DD'. */
+function etDateOf(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(d);
 }
